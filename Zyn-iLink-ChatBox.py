@@ -414,8 +414,6 @@ class BotAccount:
         self._qrcode_matrix = None
         self._messages = []
         self._last_msg_id = 0
-        self._max_messages_per_user = 500
-        self._total_max_messages = 2000
         self._media_memory = {}
         self._media_memory_max = 20
         self._active_timers = {}
@@ -491,9 +489,6 @@ class BotAccount:
 
     def _save_messages(self):
         try:
-            with self._msg_lock:
-                if len(self._messages) > self._total_max_messages:
-                    self._messages = self._messages[-self._total_max_messages:]
             self._save_all_messages()
         except Exception:
             pass
@@ -502,15 +497,11 @@ class BotAccount:
         with self._msg_lock:
             self._last_msg_id += 1
             msg['id'] = self._last_msg_id
+            if 'ts' not in msg:
+                msg['ts'] = time.time()
             if 'time' not in msg:
                 msg['time'] = datetime.now().strftime('%H:%M:%S')
             self._messages.append(msg)
-            target_id = msg.get('to') or msg.get('from')
-            if target_id:
-                user_msgs = [m for m in self._messages if m.get('to') == target_id or m.get('from') == target_id]
-                if len(user_msgs) > self._max_messages_per_user:
-                    remove_ids = {m.get('id') for m in user_msgs[:len(user_msgs) - self._max_messages_per_user]}
-                    self._messages = [m for m in self._messages if m.get('id') not in remove_ids]
         threading.Thread(target=self._save_messages, daemon=True).start()
 
     def get_user_messages(self, user_id, limit=50):
@@ -565,8 +556,6 @@ class BotAccount:
             return
         try:
             user_msgs = [m for m in self._messages if m.get('from') == user_id or m.get('to') == user_id]
-            if len(user_msgs) > self._max_messages_per_user * 2:
-                user_msgs = user_msgs[-self._max_messages_per_user:]
             data = {"user_id": user_id, "messages": user_msgs, "count": len(user_msgs), "saved_at": datetime.now().isoformat()}
             with open(self._get_user_messages_file(user_id), "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -851,8 +840,6 @@ class WeChatiLinkBot:
         self._qr_portal_sessions_lock = threading.Lock()
         self._messages: List[dict] = []
         self._message_callback = None
-        self._max_messages_per_user = 500
-        self._total_max_messages = 2000
         self.ai_config = self._load_ai_config()
         self.user_prompts = self._load_user_prompts()
         self._media_memory: Dict[str, List[dict]] = {}
@@ -2625,12 +2612,9 @@ class WeChatiLinkBot:
         if not user_id:
             return
         try:
-            user_msgs = [m for m in self._messages 
+            user_msgs = [m for m in self._messages
                         if m.get('from') == user_id or m.get('to') == user_id]
-            
-            if len(user_msgs) > self._max_messages_per_user * 2:
-                user_msgs = user_msgs[-self._max_messages_per_user:]
-            
+
             data = {
                 "user_id": user_id,
                 "messages": user_msgs,
@@ -3621,35 +3605,24 @@ class WeChatiLinkBot:
     
     def _save_messages(self):
         try:
-            with self._msg_lock:
-                if len(self._messages) > self._total_max_messages:
-                    print(f"[MSG] 消息数量超过限制，保留最近 {self._total_max_messages} 条")
-                    self._messages = self._messages[-self._total_max_messages:]
-            
             self._save_all_messages()
         except Exception as e:
             print(f"[MSG] 保存消息失败: {e}")
-    
+
     def _add_message_to_history(self, msg: dict):
         with self._msg_lock:
             if not hasattr(self, '_last_msg_id'):
                 self._last_msg_id = 0
             self._last_msg_id += 1
             msg['id'] = self._last_msg_id
-            
+
+            if 'ts' not in msg:
+                msg['ts'] = time.time()
             if 'time' not in msg:
                 msg['time'] = datetime.now().strftime('%H:%M:%S')
-            
+
             self._messages.append(msg)
-            print(f"[MSG] 添加消息: id={msg['id']}, type={msg.get('type')}, text={msg.get('text', '')[:50]}...")
-            
-            target_id = msg.get('to') or msg.get('from')
-            if target_id:
-                user_msgs = [m for m in self._messages if m.get('to') == target_id or m.get('from') == target_id]
-                if len(user_msgs) > self._max_messages_per_user:
-                    remove_ids = {m.get('id') for m in user_msgs[:len(user_msgs) - self._max_messages_per_user]}
-                    self._messages = [m for m in self._messages if m.get('id') not in remove_ids]
-        
+
         threading.Thread(target=self._save_messages, daemon=True).start()
     
     def get_user_messages(self, user_id: str, limit: int = 50) -> List[dict]:
@@ -3804,6 +3777,8 @@ class WeChatiLinkBot:
         apiBase: "",
         currentUser: null,
         lastMsgId: 0,
+        historyState: { loading: false, noMore: false, earliestId: null },
+        lastRenderedMsg: null,
         pollInterval: null,
         sse: null,
         adminPollInterval: null,
@@ -3950,11 +3925,60 @@ class WeChatiLinkBot:
     const _svgVoice = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#999" stroke-width="1.5"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>';
     const _svgPlay = '<svg viewBox="0 0 24 24" width="36" height="36" fill="rgba(0,0,0,0.5)"><path d="M8 5v14l11-7z"/></svg>';
 
+    const _fmtTimeDivider = function(ts) {
+        if (!ts) return "";
+        var d = new Date(ts * 1000);
+        var now = new Date();
+        var pad = function(x) { return (x < 10 ? "0" : "") + x; };
+        var hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
+        var todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        var dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+        var dayDiff = Math.floor((todayStart - dayStart) / 86400000);
+        if (dayDiff === 0) return hm;
+        if (dayDiff === 1) return "昨天 " + hm;
+        if (dayDiff > 1 && dayDiff < 7) {
+            var wd = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"][d.getDay()];
+            return wd + " " + hm;
+        }
+        if (d.getFullYear() === now.getFullYear()) return (d.getMonth() + 1) + "月" + d.getDate() + "日 " + hm;
+        return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日 " + hm;
+    };
+
+    const _sameDay = function(a, b) {
+        var da = new Date(a * 1000), db = new Date(b * 1000);
+        return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate();
+    };
+
+    const _shouldShowDivider = function(prevMsg, msg) {
+        if (!msg || !msg.ts) return false;
+        if (!prevMsg || !prevMsg.ts) return true;
+        if (!_sameDay(prevMsg.ts, msg.ts)) return true;
+        return (msg.ts - prevMsg.ts) > 300;
+    };
+
+    const _buildTimeDivider = function(msg) {
+        var d = document.createElement("div");
+        d.className = "msg-time-divider";
+        d.textContent = _fmtTimeDivider(msg.ts);
+        return d;
+    };
+
     const _renderMsg = function(e) {
         const t = document.getElementById("messages-area");
         if (!t) return;
         const n = t.querySelector(".empty-state");
         if (n) n.remove();
+        const nearBottom = t.scrollHeight - t.scrollTop - t.clientHeight < 150;
+        if (_shouldShowDivider(_state.lastRenderedMsg, e)) {
+            t.appendChild(_buildTimeDivider(e));
+        }
+        const o = _buildMsgRow(e);
+        t.appendChild(o);
+        if (nearBottom) t.scrollTop = t.scrollHeight;
+        _state.lastRenderedMsg = e;
+    };
+
+    const _buildMsgRow = function(e) {
         const o = document.createElement("div");
         o.className = "msg-row " + (e.type === "out" ? "out" : "in");
         if (e.id) o.dataset.msgId = e.id;
@@ -3967,7 +3991,7 @@ class WeChatiLinkBot:
                 var cdnAttr = (e.media_cdn && !e.media_cache_id) ? ' data-cdn="' + encodeURIComponent(e.media_cdn) + '"' : '';
                 var displaySrc = imgSrc || cacheSrc;
                 var loadAttr = cacheSrc && imgSrc ? ' data-hq-src="' + cacheSrc + '"' : '';
-                bubbleContent = '<div class="bubble-media-img-wrap"' + cdnAttr + loadAttr + '><img class="bubble-media-img" src="' + displaySrc + '" alt="图片" /></div>';
+                bubbleContent = '<div class="bubble-media-img-wrap"' + cdnAttr + loadAttr + '><img class="bubble-media-img" loading="lazy" src="' + displaySrc + '" alt="图片" /></div>';
             } else if (e.media_cdn) {
                 bubbleContent = '<div class="bubble-media-img-wrap bubble-media-loading" data-cdn="' + encodeURIComponent(e.media_cdn) + '"><div class="bubble-media-placeholder">' + _svgImage + '<span>图片</span></div></div>';
             } else {
@@ -4011,11 +4035,9 @@ class WeChatiLinkBot:
         } else {
             bubbleContent = '<div class="bubble-text">' + _escape(e.text || "") + '</div>';
         }
-        o.innerHTML = '<div class="bubble ' + (e.type === "out" ? "out" : "in") + '">' + bubbleContent + '<div class="msg-time-row">' + (e.media_cdn && !e.media_cache_id ? '<span class="msg-send-status msg-send-loading"></span>' : '') + '<span class="msg-time">' + (e.time || "") + '</span></div></div>';
+        o.innerHTML = '<div class="bubble ' + (e.type === "out" ? "out" : "in") + '">' + bubbleContent + (e.media_cdn && !e.media_cache_id ? '<div class="msg-time-row"><span class="msg-send-status msg-send-loading"></span></div>' : '') + '</div>';
         o._msgData = e;
-        t.appendChild(o);
-        t.scrollTop = t.scrollHeight;
-        
+
         var loadingEl = o.querySelector('.bubble-media-loading');
         if (loadingEl) {
             window._loadCdnMedia(loadingEl);
@@ -4050,6 +4072,7 @@ class WeChatiLinkBot:
                 }));
             }
         }
+        return o;
     };
 
     const _renderSendingMsg = function(e) {
@@ -4082,9 +4105,14 @@ class WeChatiLinkBot:
         } else {
             bubbleContent = '<div class="bubble-text">' + _escape(e.text || "") + '</div>';
         }
-        o.innerHTML = '<div class="bubble out">' + bubbleContent + '<div class="msg-time-row"><span class="msg-send-status msg-send-loading"></span><span class="msg-time">' + (e.time || "") + '</span></div></div>';
+        o.innerHTML = '<div class="bubble out">' + bubbleContent + '<div class="msg-time-row"><span class="msg-send-status msg-send-loading"></span></div></div>';
+        if (!e.ts) e.ts = Date.now() / 1000;
+        if (_shouldShowDivider(_state.lastRenderedMsg, e)) {
+            t.appendChild(_buildTimeDivider(e));
+        }
         t.appendChild(o);
         t.scrollTop = t.scrollHeight;
+        _state.lastRenderedMsg = e;
     };
 
     var _currentAudio = null;
@@ -4966,24 +4994,82 @@ class WeChatiLinkBot:
     };
     
     const _loadHistory = async function(e) {
-        const t = e ? `/history?user=${encodeURIComponent(e)}&limit=500` : "/history?limit=500";
+        _state.historyState = { loading: false, noMore: false, earliestId: null };
+        _state.lastRenderedMsg = null;
+        const t = e ? `/history?user=${encodeURIComponent(e)}&limit=50` : "/history?limit=50";
         const n = await _get(t);
         if (!n || n.error) return;
         const o = n.messages || [];
-        if (o.length === 0) return;
         const i = document.getElementById("messages-area");
         if (i) i.innerHTML = "";
         _state.displayedIds.clear();
-        o.forEach((function(e) {
-            _renderMsg(e);
-            if (e.id) _state.displayedIds.add(e.id);
-        }));
-        if (o.length > 0) {
-            const e = Math.max.apply(null, o.map((function(e) { return e.id || 0; })));
-            _state.lastMsgId = Math.max(_state.lastMsgId, e);
+        if (o.length === 0) {
+            _state.historyState.noMore = true;
+            return;
         }
+        o.forEach((function(m) {
+            _renderMsg(m);
+            if (m.id) _state.displayedIds.add(m.id);
+        }));
+        const ids = o.map((function(m) { return m.id || 0; }));
+        _state.historyState.earliestId = Math.min.apply(null, ids);
+        if (o.length < 50) _state.historyState.noMore = true;
+        const maxId = Math.max.apply(null, ids);
+        _state.lastMsgId = Math.max(_state.lastMsgId, maxId);
         const r = document.getElementById("messages-area");
         if (r) r.scrollTop = r.scrollHeight;
+    };
+
+    const _prependHistory = function(msgs) {
+        const t = document.getElementById("messages-area");
+        if (!t) return;
+        var anchor = t.firstElementChild;
+        while (anchor && anchor.classList && anchor.classList.contains('msg-time-divider')) {
+            var rm = anchor;
+            anchor = anchor.nextElementSibling;
+            rm.remove();
+        }
+        var firstExistingData = anchor ? anchor._msgData : null;
+        var prev = null;
+        msgs.forEach((function(m) {
+            if (_shouldShowDivider(prev, m)) {
+                t.insertBefore(_buildTimeDivider(m), anchor);
+            }
+            t.insertBefore(_buildMsgRow(m), anchor);
+            prev = m;
+        }));
+        if (firstExistingData && _shouldShowDivider(prev, firstExistingData)) {
+            t.insertBefore(_buildTimeDivider(firstExistingData), anchor);
+        }
+    };
+
+    const _loadMoreHistory = async function() {
+        if (!_state.currentUser || _state.historyState.loading || _state.historyState.noMore) return;
+        if (!_state.historyState.earliestId) { _state.historyState.noMore = true; return; }
+        _state.historyState.loading = true;
+        const user = _state.currentUser;
+        const q = `/history?user=${encodeURIComponent(user)}&limit=50&before_id=${_state.historyState.earliestId}`;
+        let n = null;
+        try { n = await _get(q); } catch (err) { n = null; }
+        if (_state.currentUser !== user) { _state.historyState.loading = false; return; }
+        if (!n || n.error) { _state.historyState.loading = false; return; }
+        const o = n.messages || [];
+        if (o.length === 0) {
+            _state.historyState.noMore = true;
+            _state.historyState.loading = false;
+            return;
+        }
+        const t = document.getElementById("messages-area");
+        if (!t) { _state.historyState.loading = false; return; }
+        const prevHeight = t.scrollHeight;
+        const prevTop = t.scrollTop;
+        _prependHistory(o);
+        const ids = o.map((function(m) { return m.id || 0; }));
+        _state.historyState.earliestId = Math.min(_state.historyState.earliestId, Math.min.apply(null, ids));
+        if (o.length < 50) _state.historyState.noMore = true;
+        o.forEach((function(m) { if (m.id) _state.displayedIds.add(m.id); }));
+        t.scrollTop = t.scrollHeight - prevHeight + prevTop;
+        _state.historyState.loading = false;
     };
     
     const _fetchMessages = async function() {
@@ -5729,6 +5815,10 @@ class WeChatiLinkBot:
     };
 
     const _initEvents = function() {
+        const msgArea = document.getElementById("messages-area");
+        if (msgArea) msgArea.addEventListener("scroll", function() {
+            if (this.scrollTop < 80) _loadMoreHistory();
+        });
         document.addEventListener("error", function(ev) {
             var img = ev.target;
             if (img.tagName === 'IMG' && img.classList.contains('bubble-media-img')) {
@@ -7896,6 +7986,8 @@ html, body {
 .msg-time { font-size: 11px; color: var(--text-hint); margin-top: 4px; text-align: right; }
 .bubble.out .msg-time { color: rgba(255,255,255,0.65); }
 .msg-time-row { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 4px; }
+.msg-time-divider { align-self: center; text-align: center; font-size: 11px; color: var(--text-hint); background: rgba(0,0,0,0.05); border-radius: 6px; padding: 2px 8px; margin: 8px auto 2px; max-width: 60%; }
+[data-theme="dark"] .msg-time-divider { background: rgba(255,255,255,0.08); }
 .msg-send-status { display: inline-flex; align-items: center; justify-content: center; }
 .msg-send-loading { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
 .msg-send-fail { width: 18px; height: 18px; border-radius: 50%; background: #FF3B30; color: #fff; font-size: 12px; font-weight: 700; line-height: 18px; text-align: center; cursor: pointer; }
@@ -10452,19 +10544,28 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                 try:
                     params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                     user_id = params.get('user', [None])[0]
-                    limit_str = params.get('limit', ['200'])[0]
+                    limit_str = params.get('limit', ['50'])[0]
+                    before_id_str = params.get('before_id', [None])[0]
                     try:
-                        limit = min(int(limit_str), 500)
+                        limit = max(1, min(int(limit_str), 1000))
                     except (ValueError, TypeError):
-                        limit = 200
+                        limit = 50
+                    before_id = None
+                    if before_id_str:
+                        try:
+                            before_id = int(before_id_str)
+                        except (ValueError, TypeError):
+                            before_id = None
                     account = self._resolve_account()
                     target = account if account else bot
                     if user_id:
-                        history_msgs = target.get_user_messages(user_id, limit)
+                        history_msgs = target.get_user_messages(user_id, 0)
                     else:
                         with target._msg_lock:
-                            all_msgs = list(target._messages) if target._messages else []
-                        history_msgs = all_msgs[-limit:]
+                            history_msgs = list(target._messages) if target._messages else []
+                    if before_id is not None:
+                        history_msgs = [m for m in history_msgs if m.get('id', 0) < before_id]
+                    history_msgs = history_msgs[-limit:]
                     enriched = []
                     for msg in history_msgs:
                         msg_copy = dict(msg)
@@ -10485,7 +10586,7 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                         'total': 0,
                         'found': 0,
                         'user_id': '',
-                        'limit': 200
+                        'limit': 50
                     })
             
             def _serve_captcha(self):
