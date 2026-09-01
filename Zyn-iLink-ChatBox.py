@@ -888,7 +888,7 @@ class WeChatiLinkBot:
         
         self._accounts: Dict[str, BotAccount] = {}
         self._account_sessions: Dict[str, str] = {}
-        self._fingerprint_sessions: Dict[str, str] = {}
+        self._remember_tokens: Dict[str, dict] = {}
         self._sse_connections: Dict[str, list] = {}
         self._sse_lock = threading.Lock()
         self._load_accounts()
@@ -1279,6 +1279,18 @@ class WeChatiLinkBot:
             pass
         return f"http://{local_ip}:{self._qr_portal_port}"
 
+    def _issue_remember_token(self, username: str) -> str:
+        import secrets
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
+        self._remember_tokens[token_hash] = {'username': username, 'expires': time.time() + 86400 * 30}
+        return token
+
+    def _revoke_remember_tokens(self, username: str):
+        for token_hash, info in list(self._remember_tokens.items()):
+            if info.get('username') == username:
+                del self._remember_tokens[token_hash]
+
     def _register_account(self, username: str, password: str, client_ip: str = "", email: str = "") -> dict:
         if not username or len(username) < 2 or len(username) > 32:
             return {"success": False, "error": "用户名长度需在2-32之间"}
@@ -1300,9 +1312,10 @@ class WeChatiLinkBot:
         self._account_sessions[session_token] = username
         self._verified_sessions[session_token] = time.time() + 86400 * 30
         print(f"[多账户] 新账户注册: {username} IP: {client_ip}")
-        return {"success": True, "session_token": session_token, "username": username}
+        remember_token = self._issue_remember_token(username)
+        return {"success": True, "session_token": session_token, "remember_token": remember_token, "username": username}
 
-    def _login_account(self, username: str, password: str, fingerprint: str = "", client_ip: str = "") -> dict:
+    def _login_account(self, username: str, password: str, client_ip: str = "") -> dict:
         if not username or not password:
             return {"success": False, "error": "用户名和密码不能为空"}
         account = self._accounts.get(username)
@@ -1319,20 +1332,24 @@ class WeChatiLinkBot:
         session_token = self._generate_session_token()
         self._account_sessions[session_token] = username
         self._verified_sessions[session_token] = time.time() + 86400 * 30
-        if fingerprint:
-            self._fingerprint_sessions[fingerprint] = username
+        remember_token = self._issue_remember_token(username)
         account.last_ip = client_ip
         print(f"[多账户] 账户登录: {username} IP: {client_ip}")
-        return {"success": True, "session_token": session_token, "username": username}
+        return {"success": True, "session_token": session_token, "remember_token": remember_token, "username": username}
 
-    def _fingerprint_login(self, fingerprint: str, client_ip: str = "") -> dict:
-        if not fingerprint:
-            return {"success": False, "error": "指纹为空"}
-        username = self._fingerprint_sessions.get(fingerprint)
-        if not username:
+    def _remember_login(self, token: str, client_ip: str = "") -> dict:
+        if not token:
+            return {"success": False, "error": "凭据为空"}
+        token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
+        info = self._remember_tokens.get(token_hash)
+        if not info:
             return {"success": False, "error": "未找到关联账户"}
+        if info.get('expires', 0) < time.time():
+            self._remember_tokens.pop(token_hash, None)
+            return {"success": False, "error": "凭据已过期"}
+        username = info['username']
         if username not in self._accounts:
-            self._fingerprint_sessions.pop(fingerprint, None)
+            self._remember_tokens.pop(token_hash, None)
             return {"success": False, "error": "账户不存在"}
         old_sessions = [tok for tok, uname in self._account_sessions.items() if uname == username]
         for tok in old_sessions:
@@ -1343,7 +1360,7 @@ class WeChatiLinkBot:
         self._account_sessions[session_token] = username
         self._verified_sessions[session_token] = time.time() + 86400 * 30
         self._accounts[username].last_ip = client_ip
-        print(f"[多账户] 指纹登录: {username} IP: {client_ip}")
+        print(f"[多账户] 自动登录: {username} IP: {client_ip}")
         return {"success": True, "session_token": session_token, "username": username}
 
     def _change_account_password(self, username: str, old_password: str, new_password: str) -> dict:
@@ -1364,9 +1381,7 @@ class WeChatiLinkBot:
         for tok in old_sessions:
             self._account_sessions.pop(tok, None)
             self._verified_sessions.pop(tok, None)
-        for fp, uname in list(self._fingerprint_sessions.items()):
-            if uname == username:
-                del self._fingerprint_sessions[fp]
+        self._revoke_remember_tokens(username)
         print(f"[多账户] 账户修改密码: {username}")
         return {"success": True}
 
@@ -1381,9 +1396,7 @@ class WeChatiLinkBot:
         for tok in old_sessions:
             self._account_sessions.pop(tok, None)
             self._verified_sessions.pop(tok, None)
-        for fp, uname in list(self._fingerprint_sessions.items()):
-            if uname == username:
-                del self._fingerprint_sessions[fp]
+        self._revoke_remember_tokens(username)
         del self._accounts[username]
         self._save_accounts()
         print(f"[多账户] 账户已注销: {username}")
@@ -1420,9 +1433,7 @@ class WeChatiLinkBot:
         for tok in old_sessions:
             self._account_sessions.pop(tok, None)
             self._verified_sessions.pop(tok, None)
-        for fp, uname in list(self._fingerprint_sessions.items()):
-            if uname == username:
-                del self._fingerprint_sessions[fp]
+        self._revoke_remember_tokens(username)
         print(f"[多账户] 账户重置密码: {username}")
         return {"success": True}
 
@@ -6009,55 +6020,34 @@ class WeChatiLinkBot:
         setInterval(_checkAnnouncement, 30000);
     };
 
-    const _generateFingerprint = function() {
-        try {
-            var canvas = document.createElement('canvas');
-            canvas.width = 200; canvas.height = 50;
-            var ctx = canvas.getContext('2d');
-            ctx.textBaseline = 'top';
-            ctx.font = '14px Arial';
-            ctx.fillStyle = '#f60';
-            ctx.fillRect(125, 1, 62, 20);
-            ctx.fillStyle = '#069';
-            ctx.fillText('ZynChatBox', 2, 15);
-            ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
-            ctx.fillText('ZynChatBox', 4, 17);
-            var dataUrl = canvas.toDataURL();
-            var fp = navigator.userAgent + '|' + screen.width + 'x' + screen.height + '|' + screen.colorDepth + '|' + new Date().getTimezoneOffset() + '|' + dataUrl;
-            var hash = 0;
-            for (var i = 0; i < fp.length; i++) {
-                var char = fp.charCodeAt(i);
-                hash = ((hash << 5) - hash) + char;
-                hash = hash & hash;
-            }
-            return Math.abs(hash).toString(36) + fp.length.toString(36);
-        } catch(e) {
-            return navigator.userAgent.replace(/[^a-zA-Z0-9]/g, '').substring(0, 32);
-        }
-    };
-
     const _initLockScreen = async function() {
-        var fingerprint = _generateFingerprint();
-        try {
-            var resp = await new Promise(function(resolve, reject) {
-                var o = new XMLHttpRequest();
-                o.open("POST", "/api/wasm/bot-fingerprint-login", true);
-                o.setRequestHeader("Content-Type", "application/json");
-                o.setRequestHeader("X-Session-Token", _state.token);
-                o.onload = function() {
-                    if (o.status >= 200 && o.status < 300) {
-                        try { resolve(JSON.parse(o.responseText)); } catch(e) { resolve({success: false}); }
-                    } else { resolve({success: false}); }
-                };
-                o.onerror = function() { resolve({success: false}); };
-                o.send(JSON.stringify({fingerprint: fingerprint, client_ip: _state.clientIP || ""}));
-            });
-            if (resp && resp.success && resp.session_token) {
-                _state.token = resp.session_token;
-                _afterAuth();
-                return;
-            }
-        } catch(e) {}
+        var rememberToken = "";
+        try { rememberToken = localStorage.getItem("zyn_remember_token") || ""; } catch(e) {}
+        if (rememberToken) {
+            try {
+                var resp = await new Promise(function(resolve, reject) {
+                    var o = new XMLHttpRequest();
+                    o.open("POST", "/api/wasm/bot-remember-login", true);
+                    o.setRequestHeader("Content-Type", "application/json");
+                    o.setRequestHeader("X-Session-Token", _state.token);
+                    o.onload = function() {
+                        if (o.status >= 200 && o.status < 300) {
+                            try { resolve(JSON.parse(o.responseText)); } catch(e) { resolve({success: false}); }
+                        } else { resolve({success: false}); }
+                    };
+                    o.onerror = function() { resolve({success: false}); };
+                    o.send(JSON.stringify({token: rememberToken}));
+                });
+                if (resp && resp.success && resp.session_token) {
+                    _state.token = resp.session_token;
+                    _afterAuth();
+                    return;
+                }
+                if (resp && resp.error && resp.error !== "尝试过多") {
+                    try { localStorage.removeItem("zyn_remember_token"); } catch(e) {}
+                }
+            } catch(e) {}
+        }
         var lockScreen = document.getElementById("lock-screen");
         if (lockScreen) lockScreen.classList.remove("hide");
         var app = document.getElementById("app");
@@ -6317,7 +6307,6 @@ class WeChatiLinkBot:
         if (!password) { errorEl.textContent = "请输入密码"; return; }
         if (submitBtn) submitBtn.disabled = true;
         errorEl.textContent = "";
-        var fingerprint = _generateFingerprint();
         try {
             var resp = await new Promise(function(resolve, reject) {
                 var o = new XMLHttpRequest();
@@ -6330,10 +6319,11 @@ class WeChatiLinkBot:
                     } else { resolve({success: false, error: "请求失败"}); }
                 };
                 o.onerror = function() { resolve({success: false, error: "网络错误"}); };
-                o.send(JSON.stringify({username: username, password: password, fingerprint: fingerprint, client_ip: _state.clientIP || ""}));
+                o.send(JSON.stringify({username: username, password: password, client_ip: _state.clientIP || ""}));
             });
             if (resp && resp.success && resp.session_token) {
                 _state.token = resp.session_token;
+                if (resp.remember_token) { try { localStorage.setItem("zyn_remember_token", resp.remember_token); } catch(e) {} }
                 _afterAuth();
             } else {
                 errorEl.textContent = (resp && resp.error) || "登录失败";
@@ -6388,6 +6378,7 @@ class WeChatiLinkBot:
             });
             if (resp && resp.success && resp.session_token) {
                 _state.token = resp.session_token;
+                if (resp.remember_token) { try { localStorage.setItem("zyn_remember_token", resp.remember_token); } catch(e) {} }
                 _afterAuth();
             } else {
                 errorEl.textContent = (resp && resp.error) || "注册失败";
@@ -6737,6 +6728,7 @@ class WeChatiLinkBot:
             try {
                 await _api("bot-logout", {});
             } catch(e) {}
+            try { localStorage.removeItem("zyn_remember_token"); } catch(e) {}
             _state.token = "";
             if (_state.pollInterval) { clearInterval(_state.pollInterval); _state.pollInterval = null; }
             var lockScreen = document.getElementById("lock-screen");
@@ -6914,7 +6906,7 @@ class WeChatiLinkBot:
         if (forceOfflineBtn) forceOfflineBtn.addEventListener("click", async function() {
             var index = document.getElementById("admin-force-offline-index").value.trim();
             if (!index) { _toast("请输入序号"); return; }
-            if (!confirm("确定要强制下线序号 " + index + " 的用户并删除指纹登录吗？")) return;
+            if (!confirm("确定要强制下线序号 " + index + " 的用户并删除自动登录吗？")) return;
             try {
                 var resp = await _api("admin-force-offline", {index: parseInt(index)});
                 if (resp && resp.success) { _toast("用户已强制下线"); document.getElementById("admin-force-offline-index").value = ""; _loadAdminUserMgmt(); }
@@ -7343,11 +7335,11 @@ window.ZynWasm.init();
                         return
                     self._handle_bot_login(data)
                     return
-                elif parsed.path == '/api/wasm/bot-fingerprint-login':
+                elif parsed.path == '/api/wasm/bot-remember-login':
                     data = self._parse_json_body()
                     if data is None:
                         return
-                    self._handle_bot_fingerprint_login(data)
+                    self._handle_bot_remember_login(data)
                     return
                 elif parsed.path == '/api/wasm/auth-login':
                     data = self._parse_json_body()
@@ -9672,36 +9664,45 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                 if result.get('success'):
                     new_token = result.get('session_token')
                     cookie = f'session_token={new_token}; Path=/; SameSite=Lax; HttpOnly; Max-Age=2592000' if new_token else None
-                    self._send_json({'success': True, 'session_token': new_token, 'username': result.get('username')}, cookies=[cookie] if cookie else None)
+                    self._send_json({'success': True, 'session_token': new_token, 'remember_token': result.get('remember_token'), 'username': result.get('username')}, cookies=[cookie] if cookie else None)
                 else:
                     self._send_json(result)
 
             def _handle_bot_login(self, data):
                 username = str(data.get('username', '')).strip()
                 password = str(data.get('password', ''))
-                fingerprint = str(data.get('fingerprint', ''))
                 server_ip = self._get_client_ip()
                 frontend_ip = str(data.get('client_ip', '')).strip()
                 client_ip = frontend_ip if frontend_ip and server_ip in ('127.0.0.1', '::1', 'localhost') else server_ip
-                result = bot._login_account(username, password, fingerprint, client_ip)
+                result = bot._login_account(username, password, client_ip)
                 if result.get('success'):
                     new_token = result.get('session_token')
                     cookie = f'session_token={new_token}; Path=/; SameSite=Lax; HttpOnly; Max-Age=2592000' if new_token else None
-                    self._send_json({'success': True, 'session_token': new_token, 'username': result.get('username')}, cookies=[cookie] if cookie else None)
+                    self._send_json({'success': True, 'session_token': new_token, 'remember_token': result.get('remember_token'), 'username': result.get('username')}, cookies=[cookie] if cookie else None)
                 else:
                     self._send_json(result)
 
-            def _handle_bot_fingerprint_login(self, data):
-                fingerprint = str(data.get('fingerprint', ''))
-                server_ip = self._get_client_ip()
-                frontend_ip = str(data.get('client_ip', '')).strip()
-                client_ip = frontend_ip if frontend_ip and server_ip in ('127.0.0.1', '::1', 'localhost') else server_ip
-                result = bot._fingerprint_login(fingerprint, client_ip)
+            def _handle_bot_remember_login(self, data):
+                token = str(data.get('token', ''))
+                client_ip = self._get_client_ip()
+                now = time.time()
+                attempt_info = bot._login_attempts.get(client_ip, {'count': 0, 'lockout': 0})
+                if now < attempt_info.get('lockout', 0):
+                    remaining = int(attempt_info['lockout'] - now)
+                    self._send_json({'success': False, 'error': f'尝试过多，请{remaining}秒后再试'})
+                    return
+                result = bot._remember_login(token, client_ip)
                 if result.get('success'):
+                    bot._login_attempts.pop(client_ip, None)
                     new_token = result.get('session_token')
                     cookie = f'session_token={new_token}; Path=/; SameSite=Lax; HttpOnly; Max-Age=2592000' if new_token else None
                     self._send_json({'success': True, 'session_token': new_token, 'username': result.get('username')}, cookies=[cookie] if cookie else None)
                 else:
+                    attempt_info['count'] = attempt_info.get('count', 0) + 1
+                    if attempt_info['count'] >= 10:
+                        attempt_info['lockout'] = now + 300
+                        attempt_info['count'] = 0
+                    bot._login_attempts[client_ip] = attempt_info
                     self._send_json(result)
 
             def _handle_auth_login(self, data):
@@ -10001,9 +10002,7 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                     username = bot._account_sessions.pop(session_token, None)
                     bot._verified_sessions.pop(session_token, None)
                     if username:
-                        for fp, uname in list(bot._fingerprint_sessions.items()):
-                            if uname == username:
-                                del bot._fingerprint_sessions[fp]
+                        bot._revoke_remember_tokens(username)
                         print(f"[多账户] 账户退出登录: {username}")
                 self._send_json({'success': True})
 
@@ -10014,8 +10013,6 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                     return
                 online_usernames = set()
                 for tok, uname in bot._account_sessions.items():
-                    online_usernames.add(uname)
-                for tok, uname in bot._fingerprint_sessions.items():
                     online_usernames.add(uname)
                 users = []
                 for username, acc in bot._accounts.items():
@@ -10064,9 +10061,7 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                 for tok in old_sessions:
                     bot._account_sessions.pop(tok, None)
                     bot._verified_sessions.pop(tok, None)
-                for fp, uname in list(bot._fingerprint_sessions.items()):
-                    if uname == username:
-                        del bot._fingerprint_sessions[fp]
+                bot._revoke_remember_tokens(username)
                 del bot._accounts[username]
                 bot._save_accounts()
                 try:
@@ -10154,9 +10149,7 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                     bot._account_sessions.pop(tok, None)
                     bot._verified_sessions.pop(tok, None)
                     bot._session_tokens.pop(tok, None)
-                for fp, uname in list(bot._fingerprint_sessions.items()):
-                    if uname == username:
-                        del bot._fingerprint_sessions[fp]
+                bot._revoke_remember_tokens(username)
                 print(f"[管理员] 管理员强制下线用户: {username}")
                 self._send_json({'success': True})
 
@@ -10646,33 +10639,6 @@ var _token = "__SESSION_TOKEN__";
     var errorEl = document.getElementById("lock-screen-error");
     var _emailRegisterEnabled = false;
 
-    function _generateFingerprint() {
-        try {
-            var canvas = document.createElement('canvas');
-            canvas.width = 200; canvas.height = 50;
-            var ctx = canvas.getContext('2d');
-            ctx.textBaseline = 'top';
-            ctx.font = '14px Arial';
-            ctx.fillStyle = '#f60';
-            ctx.fillRect(125, 1, 62, 20);
-            ctx.fillStyle = '#069';
-            ctx.fillText('ZynChatBox', 2, 15);
-            ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
-            ctx.fillText('ZynChatBox', 4, 17);
-            var dataUrl = canvas.toDataURL();
-            var fp = navigator.userAgent + '|' + screen.width + 'x' + screen.height + '|' + screen.colorDepth + '|' + new Date().getTimezoneOffset() + '|' + dataUrl;
-            var hash = 0;
-            for (var i = 0; i < fp.length; i++) {
-                var char = fp.charCodeAt(i);
-                hash = ((hash << 5) - hash) + char;
-                hash = hash & hash;
-            }
-            return Math.abs(hash).toString(36) + fp.length.toString(36);
-        } catch(e) {
-            return navigator.userAgent.replace(/[^a-zA-Z0-9]/g, '').substring(0, 32);
-        }
-    }
-
     if (showRegisterBtn) showRegisterBtn.addEventListener("click", function() {
         if (loginForm) loginForm.style.display = "none";
         if (registerForm) registerForm.style.display = "";
@@ -10899,7 +10865,6 @@ var _token = "__SESSION_TOKEN__";
         if (!password) { errorEl.textContent = "请输入密码"; return; }
         if (loginSubmitBtn) loginSubmitBtn.disabled = true;
         errorEl.textContent = "";
-        var fingerprint = _generateFingerprint();
         try {
             var resp = await new Promise(function(resolve, reject) {
                 var o = new XMLHttpRequest();
@@ -10912,10 +10877,11 @@ var _token = "__SESSION_TOKEN__";
                     } else { resolve({success: false, error: "请求失败"}); }
                 };
                 o.onerror = function() { resolve({success: false, error: "网络错误"}); };
-                o.send(JSON.stringify({username: username, password: password, fingerprint: fingerprint, client_ip: window._clientIP || ""}));
+                o.send(JSON.stringify({username: username, password: password, client_ip: window._clientIP || ""}));
             });
             if (resp && resp.success && resp.session_token) {
                 _token = resp.session_token;
+                if (resp.remember_token) { try { localStorage.setItem("zyn_remember_token", resp.remember_token); } catch(e) {} }
                 window.location.href = '/';
             } else {
                 errorEl.textContent = (resp && resp.error) || "登录失败";
@@ -10965,6 +10931,7 @@ var _token = "__SESSION_TOKEN__";
             });
             if (resp && resp.success && resp.session_token) {
                 _token = resp.session_token;
+                if (resp.remember_token) { try { localStorage.setItem("zyn_remember_token", resp.remember_token); } catch(e) {} }
                 window.location.href = '/';
             } else {
                 errorEl.textContent = (resp && resp.error) || "注册失败";
@@ -10977,11 +10944,13 @@ var _token = "__SESSION_TOKEN__";
     }
 
     (async function() {
-        var fingerprint = _generateFingerprint();
+        var rememberToken = "";
+        try { rememberToken = localStorage.getItem("zyn_remember_token") || ""; } catch(e) {}
+        if (!rememberToken) return;
         try {
             var resp = await new Promise(function(resolve, reject) {
                 var o = new XMLHttpRequest();
-                o.open("POST", "/api/wasm/bot-fingerprint-login", true);
+                o.open("POST", "/api/wasm/bot-remember-login", true);
                 o.setRequestHeader("Content-Type", "application/json");
                 o.setRequestHeader("X-Session-Token", _token);
                 o.onload = function() {
@@ -10990,12 +10959,15 @@ var _token = "__SESSION_TOKEN__";
                     } else { resolve({success: false}); }
                 };
                 o.onerror = function() { resolve({success: false}); };
-                o.send(JSON.stringify({fingerprint: fingerprint, client_ip: window._clientIP || ""}));
+                o.send(JSON.stringify({token: rememberToken}));
             });
             if (resp && resp.success && resp.session_token) {
                 _token = resp.session_token;
                 window.location.href = '/';
                 return;
+            }
+            if (resp && resp.error && resp.error.indexOf("尝试过多") === -1) {
+                try { localStorage.removeItem("zyn_remember_token"); } catch(e) {}
             }
         } catch(e) {}
     })();
@@ -13216,9 +13188,7 @@ def main():
                             for tok in old_sessions:
                                 bot._account_sessions.pop(tok, None)
                                 bot._verified_sessions.pop(tok, None)
-                            for fp, un in list(bot._fingerprint_sessions.items()):
-                                if un == target:
-                                    del bot._fingerprint_sessions[fp]
+                            bot._revoke_remember_tokens(target)
                             del bot._accounts[target]
                             bot._save_accounts()
                             try:
