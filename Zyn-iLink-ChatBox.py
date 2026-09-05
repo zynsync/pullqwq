@@ -3866,13 +3866,13 @@ class WeChatiLinkBot:
         } catch(e) {}
     };
 
-    const _api = function(e, t) {
+    const _api = function(e, t, timeout) {
         return new Promise((function(r, n) {
             const o = new XMLHttpRequest();
             o.open("POST", "/api/wasm/" + e, true);
             o.setRequestHeader("Content-Type", "application/json");
             o.setRequestHeader("X-Session-Token", _state.token);
-            o.timeout = 120000;
+            o.timeout = timeout || 120000;
             o.onload = function() {
                 if (o.status === 401) { _onAuthFail(); n(new Error("登录已失效")); return; }
                 if (o.status >= 200 && o.status < 300) {
@@ -4444,11 +4444,14 @@ class WeChatiLinkBot:
         var cdn = decodeURIComponent(el.dataset.cdn || "");
         var mediaType = el.dataset.mediaType || "image";
         if (!cdn) return;
+        var ctrl = new AbortController();
+        var timer = setTimeout(function() { ctrl.abort(); }, 300000);
         fetch('/api/wasm/download-media', {
             method: 'POST',
             headers: {'Content-Type': 'application/json', 'X-Session-Token': _state.token},
-            body: JSON.stringify({cdn_info: _cdnInfoStr(cdn)})
-        }).then(function(r) { return r.json(); }).then(function(result) {
+            body: JSON.stringify({cdn_info: _cdnInfoStr(cdn)}),
+            signal: ctrl.signal
+        }).then(function(r) { clearTimeout(timer); return r.json(); }).then(function(result) {
             if (result.success && result.cache_key) {
                 var cacheUrl = '/api/wasm/media/' + result.cache_key;
                 if (mediaType === "video") {
@@ -4483,6 +4486,7 @@ class WeChatiLinkBot:
                 _removeLoadingSpinner(el);
             }
         }).catch(function() {
+            clearTimeout(timer);
             var svgIcon = _svgImage;
             var label = "加载失败";
             if (mediaType === "video") { svgIcon = _svgVideo; label = "视频加载失败"; }
@@ -5298,7 +5302,7 @@ class WeChatiLinkBot:
                 thumbnail: thumbnailData
             };
             
-            var result = await _api("send-media", payload);
+            var result = await _api("send-media", payload, 900000);
             
             var sendingEl = document.querySelector('[data-sending-id="' + placeholderMsg.id + '"]');
             
@@ -9568,10 +9572,13 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                             for m in reversed(target._messages):
                                 if m.get('type') == 'out' and m.get('media_type') == media_type_int and not m.get('media_cache_id'):
                                     msg_data['id'] = m.get('id')
-                                    if file_bytes and media_type_int in (2, 5):
+                                    if file_bytes and media_type_int in (2, 4, 5):
                                         mime = bot._detect_mime(file_bytes)
                                         if mime == 'application/octet-stream':
-                                            mime = 'video/mp4' if media_type_int == 5 else 'image/jpeg'
+                                            if media_type_int == 5:
+                                                mime = 'video/mp4'
+                                            elif media_type_int == 2:
+                                                mime = 'image/jpeg'
                                         cache_key = hashlib.md5(file_bytes).hexdigest()
                                         target._save_media_cache(cache_key, file_bytes, mime, filename)
                                         msg_data['media_cache_id'] = cache_key
