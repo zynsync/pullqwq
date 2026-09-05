@@ -29,7 +29,7 @@ from http.server import SimpleHTTPRequestHandler
 import select
 
 _original_print = print
-_SUPPRESSED_PREFIXES = ('[AI]', '[POLL]', '[USER]', '[QR]', '[添加用户]', '[ADD-USER]', '正在获取连接二维码', '获取二维码失败', '二维码已过期', '消息发送与二维码扫描请去本地网页操作', '[WEB] 开始添加用户', '[WEB] 添加用户异常')
+_SUPPRESSED_PREFIXES = ('[POLL]', '[USER]', '[QR]', '[添加用户]', '[ADD-USER]', '正在获取连接二维码', '获取二维码失败', '二维码已过期', '消息发送与二维码扫描请去本地网页操作', '[WEB] 开始添加用户', '[WEB] 添加用户异常')
 
 def _filtered_print(*args, **kwargs):
     try:
@@ -414,8 +414,6 @@ class BotAccount:
         self._qrcode_matrix = None
         self._messages = []
         self._last_msg_id = 0
-        self._max_messages_per_user = 500
-        self._total_max_messages = 2000
         self._media_memory = {}
         self._media_memory_max = 20
         self._active_timers = {}
@@ -491,9 +489,6 @@ class BotAccount:
 
     def _save_messages(self):
         try:
-            with self._msg_lock:
-                if len(self._messages) > self._total_max_messages:
-                    self._messages = self._messages[-self._total_max_messages:]
             self._save_all_messages()
         except Exception:
             pass
@@ -502,15 +497,11 @@ class BotAccount:
         with self._msg_lock:
             self._last_msg_id += 1
             msg['id'] = self._last_msg_id
+            if 'ts' not in msg:
+                msg['ts'] = time.time()
             if 'time' not in msg:
                 msg['time'] = datetime.now().strftime('%H:%M:%S')
             self._messages.append(msg)
-            target_id = msg.get('to') or msg.get('from')
-            if target_id:
-                user_msgs = [m for m in self._messages if m.get('to') == target_id or m.get('from') == target_id]
-                if len(user_msgs) > self._max_messages_per_user:
-                    remove_ids = {m.get('id') for m in user_msgs[:len(user_msgs) - self._max_messages_per_user]}
-                    self._messages = [m for m in self._messages if m.get('id') not in remove_ids]
         threading.Thread(target=self._save_messages, daemon=True).start()
 
     def get_user_messages(self, user_id, limit=50):
@@ -565,8 +556,6 @@ class BotAccount:
             return
         try:
             user_msgs = [m for m in self._messages if m.get('from') == user_id or m.get('to') == user_id]
-            if len(user_msgs) > self._max_messages_per_user * 2:
-                user_msgs = user_msgs[-self._max_messages_per_user:]
             data = {"user_id": user_id, "messages": user_msgs, "count": len(user_msgs), "saved_at": datetime.now().isoformat()}
             with open(self._get_user_messages_file(user_id), "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -826,7 +815,7 @@ class WeChatiLinkBot:
     MEDIA_TYPE_NAMES = {2: "图片", 3: "语音", 4: "文件", 5: "视频"}
     MEDIA_TYPE_PREFIXES = {"image": "[图片]", "video": "[视频]", "file": "[文件]", "voice": "[语音]"}
     EXPIRED_CODES = {-14, 40014, 1002}
-    SCRIPT_VERSION = "3.2.4"
+    SCRIPT_VERSION = "3.2.5"
     AUTHOR_NAME = "ZynSync"
     
     def __init__(self):
@@ -851,8 +840,6 @@ class WeChatiLinkBot:
         self._qr_portal_sessions_lock = threading.Lock()
         self._messages: List[dict] = []
         self._message_callback = None
-        self._max_messages_per_user = 500
-        self._total_max_messages = 2000
         self.ai_config = self._load_ai_config()
         self.user_prompts = self._load_user_prompts()
         self._media_memory: Dict[str, List[dict]] = {}
@@ -888,7 +875,7 @@ class WeChatiLinkBot:
         
         self._accounts: Dict[str, BotAccount] = {}
         self._account_sessions: Dict[str, str] = {}
-        self._fingerprint_sessions: Dict[str, str] = {}
+        self._remember_tokens: Dict[str, dict] = {}
         self._sse_connections: Dict[str, list] = {}
         self._sse_lock = threading.Lock()
         self._load_accounts()
@@ -1279,6 +1266,18 @@ class WeChatiLinkBot:
             pass
         return f"http://{local_ip}:{self._qr_portal_port}"
 
+    def _issue_remember_token(self, username: str) -> str:
+        import secrets
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
+        self._remember_tokens[token_hash] = {'username': username, 'expires': time.time() + 86400 * 30}
+        return token
+
+    def _revoke_remember_tokens(self, username: str):
+        for token_hash, info in list(self._remember_tokens.items()):
+            if info.get('username') == username:
+                del self._remember_tokens[token_hash]
+
     def _register_account(self, username: str, password: str, client_ip: str = "", email: str = "") -> dict:
         if not username or len(username) < 2 or len(username) > 32:
             return {"success": False, "error": "用户名长度需在2-32之间"}
@@ -1300,9 +1299,10 @@ class WeChatiLinkBot:
         self._account_sessions[session_token] = username
         self._verified_sessions[session_token] = time.time() + 86400 * 30
         print(f"[多账户] 新账户注册: {username} IP: {client_ip}")
-        return {"success": True, "session_token": session_token, "username": username}
+        remember_token = self._issue_remember_token(username)
+        return {"success": True, "session_token": session_token, "remember_token": remember_token, "username": username}
 
-    def _login_account(self, username: str, password: str, fingerprint: str = "", client_ip: str = "") -> dict:
+    def _login_account(self, username: str, password: str, client_ip: str = "") -> dict:
         if not username or not password:
             return {"success": False, "error": "用户名和密码不能为空"}
         account = self._accounts.get(username)
@@ -1319,20 +1319,24 @@ class WeChatiLinkBot:
         session_token = self._generate_session_token()
         self._account_sessions[session_token] = username
         self._verified_sessions[session_token] = time.time() + 86400 * 30
-        if fingerprint:
-            self._fingerprint_sessions[fingerprint] = username
+        remember_token = self._issue_remember_token(username)
         account.last_ip = client_ip
         print(f"[多账户] 账户登录: {username} IP: {client_ip}")
-        return {"success": True, "session_token": session_token, "username": username}
+        return {"success": True, "session_token": session_token, "remember_token": remember_token, "username": username}
 
-    def _fingerprint_login(self, fingerprint: str, client_ip: str = "") -> dict:
-        if not fingerprint:
-            return {"success": False, "error": "指纹为空"}
-        username = self._fingerprint_sessions.get(fingerprint)
-        if not username:
+    def _remember_login(self, token: str, client_ip: str = "") -> dict:
+        if not token:
+            return {"success": False, "error": "凭据为空"}
+        token_hash = hashlib.sha256(token.encode('utf-8')).hexdigest()
+        info = self._remember_tokens.get(token_hash)
+        if not info:
             return {"success": False, "error": "未找到关联账户"}
+        if info.get('expires', 0) < time.time():
+            self._remember_tokens.pop(token_hash, None)
+            return {"success": False, "error": "凭据已过期"}
+        username = info['username']
         if username not in self._accounts:
-            self._fingerprint_sessions.pop(fingerprint, None)
+            self._remember_tokens.pop(token_hash, None)
             return {"success": False, "error": "账户不存在"}
         old_sessions = [tok for tok, uname in self._account_sessions.items() if uname == username]
         for tok in old_sessions:
@@ -1343,7 +1347,7 @@ class WeChatiLinkBot:
         self._account_sessions[session_token] = username
         self._verified_sessions[session_token] = time.time() + 86400 * 30
         self._accounts[username].last_ip = client_ip
-        print(f"[多账户] 指纹登录: {username} IP: {client_ip}")
+        print(f"[多账户] 自动登录: {username} IP: {client_ip}")
         return {"success": True, "session_token": session_token, "username": username}
 
     def _change_account_password(self, username: str, old_password: str, new_password: str) -> dict:
@@ -1364,9 +1368,7 @@ class WeChatiLinkBot:
         for tok in old_sessions:
             self._account_sessions.pop(tok, None)
             self._verified_sessions.pop(tok, None)
-        for fp, uname in list(self._fingerprint_sessions.items()):
-            if uname == username:
-                del self._fingerprint_sessions[fp]
+        self._revoke_remember_tokens(username)
         print(f"[多账户] 账户修改密码: {username}")
         return {"success": True}
 
@@ -1381,9 +1383,7 @@ class WeChatiLinkBot:
         for tok in old_sessions:
             self._account_sessions.pop(tok, None)
             self._verified_sessions.pop(tok, None)
-        for fp, uname in list(self._fingerprint_sessions.items()):
-            if uname == username:
-                del self._fingerprint_sessions[fp]
+        self._revoke_remember_tokens(username)
         del self._accounts[username]
         self._save_accounts()
         print(f"[多账户] 账户已注销: {username}")
@@ -1420,9 +1420,7 @@ class WeChatiLinkBot:
         for tok in old_sessions:
             self._account_sessions.pop(tok, None)
             self._verified_sessions.pop(tok, None)
-        for fp, uname in list(self._fingerprint_sessions.items()):
-            if uname == username:
-                del self._fingerprint_sessions[fp]
+        self._revoke_remember_tokens(username)
         print(f"[多账户] 账户重置密码: {username}")
         return {"success": True}
 
@@ -1594,7 +1592,7 @@ class WeChatiLinkBot:
             req = urllib.request.Request(vision_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-                reply = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                reply = result.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
                 if reply:
                     self.send_text_for_account(account, from_user, reply)
         except Exception as e:
@@ -1609,11 +1607,6 @@ class WeChatiLinkBot:
             return
         try:
             account._save_media_memory(from_user, "file", original_text or filename, filename)
-            max_size = account.ai_config.get("file_recognize_max_size", 512) * 1024
-            if len(file_data) > max_size:
-                if original_text and account.ai_config.get("auto_reply"):
-                    self._auto_ai_reply_for_account(account, from_user, original_text)
-                return
             file_b64 = base64.b64encode(file_data).decode('utf-8')
             api_url = account.ai_config.get("file_recognize_api_url")
             api_key = account.ai_config.get("file_recognize_api_key")
@@ -1633,7 +1626,7 @@ class WeChatiLinkBot:
             req = urllib.request.Request(api_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-                reply = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                reply = result.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
                 if reply:
                     self.send_text_for_account(account, from_user, reply)
         except Exception as e:
@@ -1643,10 +1636,16 @@ class WeChatiLinkBot:
 
     def _call_ai_api_for_account(self, account: BotAccount, user_message: str, history: list, is_active: bool = False, custom_instruction: str = "", media_memory_text: str = "", user_id: str = "") -> Optional[str]:
         if not account.ai_config.get("api_url"):
+            print(f"[AI] [{account.username}] API 配置不完整: url={account.ai_config.get('api_url')}")
             return None
         api_url = account.ai_config.get("api_url")
         if not api_url or not api_url.startswith(('http://', 'https://')):
+            print(f"[AI] [{account.username}] API URL格式无效")
             return None
+        print(f"[AI] [{account.username}] 正在调用 AI API，{'主动发送' if is_active else '回复消息'}")
+        if not is_active:
+            print(f"[AI] [{account.username}] 用户消息: {user_message[:100]}...")
+        print(f"[AI] [{account.username}] 历史消息数量: {len(history)} 条")
         system_prompt = account.get_effective_system_prompt(user_id)
         tool_prompt = self._build_tool_prompt_for_account(account)
         full_system = system_prompt
@@ -1678,10 +1677,28 @@ class WeChatiLinkBot:
             headers["Authorization"] = f"Bearer {account.ai_config.get('api_key')}"
         req = urllib.request.Request(api_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
         try:
+            print(f"[AI] [{account.username}] 请求 URL: {api_url}")
             with urllib.request.urlopen(req, timeout=60) as resp:
+                status_code = resp.getcode()
+                print(f"[AI] [{account.username}] HTTP 状态码: {status_code}")
                 result = json.loads(resp.read().decode("utf-8"))
-                return result.get("choices", [{}])[0].get("message", {}).get("content", "")
-        except Exception:
+                content = result.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+                print(f"[AI] [{account.username}] API 返回内容: {content[:200]}...")
+                return content
+        except urllib.error.HTTPError as e:
+            status_code = e.code
+            print(f"[AI] [{account.username}] HTTP 错误: {status_code} - {e.reason}")
+            try:
+                error_body = e.read().decode('utf-8')
+                print(f"[AI] [{account.username}] 错误详情: {error_body[:500]}")
+            except Exception:
+                pass
+            return None
+        except urllib.error.URLError as e:
+            print(f"[AI] [{account.username}] 网络错误: {e.reason}")
+            return None
+        except Exception as e:
+            print(f"[AI] [{account.username}] 未知错误: {e}")
             return None
 
     def _build_tool_prompt_for_account(self, account: BotAccount) -> str:
@@ -2614,12 +2631,9 @@ class WeChatiLinkBot:
         if not user_id:
             return
         try:
-            user_msgs = [m for m in self._messages 
+            user_msgs = [m for m in self._messages
                         if m.get('from') == user_id or m.get('to') == user_id]
-            
-            if len(user_msgs) > self._max_messages_per_user * 2:
-                user_msgs = user_msgs[-self._max_messages_per_user:]
-            
+
             data = {
                 "user_id": user_id,
                 "messages": user_msgs,
@@ -2772,7 +2786,7 @@ class WeChatiLinkBot:
                 status_code = resp.getcode()
                 print(f"[AI] HTTP 状态码: {status_code}")
                 result = json.loads(resp.read().decode("utf-8"))
-                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                content = result.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
                 print(f"[AI] API 返回内容: {content[:200]}...")
                 return content
         except urllib.error.HTTPError as e:
@@ -3007,7 +3021,7 @@ class WeChatiLinkBot:
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                content = result.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
                 print(f"[VISION] 识图回复: {content[:200]}...")
                 return content
         except urllib.error.HTTPError as e:
@@ -3221,12 +3235,7 @@ class WeChatiLinkBot:
         if not rec_url.startswith(('http://', 'https://')):
             print(f"[FILE_RECOGNIZE] 文件识别API URL格式无效")
             return None
-        
-        max_size = self.ai_config.get("file_recognize_max_size", 512) * 1024
-        if len(file_text) > max_size:
-            file_text = file_text[:max_size]
-            print(f"[FILE_RECOGNIZE] 文件内容过长，截取前 {max_size} 字符")
-        
+
         full_system = system_prompt
         if media_memory_text:
             full_system += "\n\n" + media_memory_text
@@ -3271,7 +3280,7 @@ class WeChatiLinkBot:
         try:
             with urllib.request.urlopen(req, timeout=90) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                content = result.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
                 print(f"[FILE_RECOGNIZE] 识别回复: {content[:200]}...")
                 return content
         except urllib.error.HTTPError as e:
@@ -3434,9 +3443,7 @@ class WeChatiLinkBot:
         
         if self.ai_config.get("file_recognize_compat_mode"):
             print(f"[FILE_RECOGNIZE] 兼容模式：提取文本发给消息AI处理")
-            max_size = self.ai_config.get("file_recognize_max_size", 512) * 1024
-            truncated = file_text[:max_size]
-            formatted_text = f"[用户发送了文件: {filename}]\n文件内容如下:\n{truncated}"
+            formatted_text = f"[用户发送了文件: {filename}]\n文件内容如下:\n{file_text}"
             if original_text:
                 formatted_text += f"\n附带文字: {original_text}"
             if self.ai_config.get("api_url"):
@@ -3610,35 +3617,24 @@ class WeChatiLinkBot:
     
     def _save_messages(self):
         try:
-            with self._msg_lock:
-                if len(self._messages) > self._total_max_messages:
-                    print(f"[MSG] 消息数量超过限制，保留最近 {self._total_max_messages} 条")
-                    self._messages = self._messages[-self._total_max_messages:]
-            
             self._save_all_messages()
         except Exception as e:
             print(f"[MSG] 保存消息失败: {e}")
-    
+
     def _add_message_to_history(self, msg: dict):
         with self._msg_lock:
             if not hasattr(self, '_last_msg_id'):
                 self._last_msg_id = 0
             self._last_msg_id += 1
             msg['id'] = self._last_msg_id
-            
+
+            if 'ts' not in msg:
+                msg['ts'] = time.time()
             if 'time' not in msg:
                 msg['time'] = datetime.now().strftime('%H:%M:%S')
-            
+
             self._messages.append(msg)
-            print(f"[MSG] 添加消息: id={msg['id']}, type={msg.get('type')}, text={msg.get('text', '')[:50]}...")
-            
-            target_id = msg.get('to') or msg.get('from')
-            if target_id:
-                user_msgs = [m for m in self._messages if m.get('to') == target_id or m.get('from') == target_id]
-                if len(user_msgs) > self._max_messages_per_user:
-                    remove_ids = {m.get('id') for m in user_msgs[:len(user_msgs) - self._max_messages_per_user]}
-                    self._messages = [m for m in self._messages if m.get('id') not in remove_ids]
-        
+
         threading.Thread(target=self._save_messages, daemon=True).start()
     
     def get_user_messages(self, user_id: str, limit: int = 50) -> List[dict]:
@@ -3793,6 +3789,8 @@ class WeChatiLinkBot:
         apiBase: "",
         currentUser: null,
         lastMsgId: 0,
+        historyState: { loading: false, noMore: false, earliestId: null },
+        lastRenderedMsg: null,
         pollInterval: null,
         sse: null,
         adminPollInterval: null,
@@ -3939,11 +3937,60 @@ class WeChatiLinkBot:
     const _svgVoice = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#999" stroke-width="1.5"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>';
     const _svgPlay = '<svg viewBox="0 0 24 24" width="36" height="36" fill="rgba(0,0,0,0.5)"><path d="M8 5v14l11-7z"/></svg>';
 
+    const _fmtTimeDivider = function(ts) {
+        if (!ts) return "";
+        var d = new Date(ts * 1000);
+        var now = new Date();
+        var pad = function(x) { return (x < 10 ? "0" : "") + x; };
+        var hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
+        var todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        var dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+        var dayDiff = Math.floor((todayStart - dayStart) / 86400000);
+        if (dayDiff === 0) return hm;
+        if (dayDiff === 1) return "昨天 " + hm;
+        if (dayDiff > 1 && dayDiff < 7) {
+            var wd = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"][d.getDay()];
+            return wd + " " + hm;
+        }
+        if (d.getFullYear() === now.getFullYear()) return (d.getMonth() + 1) + "月" + d.getDate() + "日 " + hm;
+        return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日 " + hm;
+    };
+
+    const _sameDay = function(a, b) {
+        var da = new Date(a * 1000), db = new Date(b * 1000);
+        return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate();
+    };
+
+    const _shouldShowDivider = function(prevMsg, msg) {
+        if (!msg || !msg.ts) return false;
+        if (!prevMsg || !prevMsg.ts) return true;
+        if (!_sameDay(prevMsg.ts, msg.ts)) return true;
+        return (msg.ts - prevMsg.ts) > 300;
+    };
+
+    const _buildTimeDivider = function(msg) {
+        var d = document.createElement("div");
+        d.className = "msg-time-divider";
+        d.textContent = _fmtTimeDivider(msg.ts);
+        return d;
+    };
+
     const _renderMsg = function(e) {
         const t = document.getElementById("messages-area");
         if (!t) return;
         const n = t.querySelector(".empty-state");
         if (n) n.remove();
+        const nearBottom = t.scrollHeight - t.scrollTop - t.clientHeight < 150;
+        if (_shouldShowDivider(_state.lastRenderedMsg, e)) {
+            t.appendChild(_buildTimeDivider(e));
+        }
+        const o = _buildMsgRow(e);
+        t.appendChild(o);
+        if (nearBottom) t.scrollTop = t.scrollHeight;
+        _state.lastRenderedMsg = e;
+    };
+
+    const _buildMsgRow = function(e) {
         const o = document.createElement("div");
         o.className = "msg-row " + (e.type === "out" ? "out" : "in");
         if (e.id) o.dataset.msgId = e.id;
@@ -3956,7 +4003,7 @@ class WeChatiLinkBot:
                 var cdnAttr = (e.media_cdn && !e.media_cache_id) ? ' data-cdn="' + encodeURIComponent(e.media_cdn) + '"' : '';
                 var displaySrc = imgSrc || cacheSrc;
                 var loadAttr = cacheSrc && imgSrc ? ' data-hq-src="' + cacheSrc + '"' : '';
-                bubbleContent = '<div class="bubble-media-img-wrap"' + cdnAttr + loadAttr + '><img class="bubble-media-img" src="' + displaySrc + '" alt="图片" /></div>';
+                bubbleContent = '<div class="bubble-media-img-wrap"' + cdnAttr + loadAttr + '><img class="bubble-media-img" loading="lazy" src="' + displaySrc + '" alt="图片" /></div>';
             } else if (e.media_cdn) {
                 bubbleContent = '<div class="bubble-media-img-wrap bubble-media-loading" data-cdn="' + encodeURIComponent(e.media_cdn) + '"><div class="bubble-media-placeholder">' + _svgImage + '<span>图片</span></div></div>';
             } else {
@@ -4000,11 +4047,9 @@ class WeChatiLinkBot:
         } else {
             bubbleContent = '<div class="bubble-text">' + _escape(e.text || "") + '</div>';
         }
-        o.innerHTML = '<div class="bubble ' + (e.type === "out" ? "out" : "in") + '">' + bubbleContent + '<div class="msg-time-row">' + (e.media_cdn && !e.media_cache_id ? '<span class="msg-send-status msg-send-loading"></span>' : '') + '<span class="msg-time">' + (e.time || "") + '</span></div></div>';
+        o.innerHTML = '<div class="bubble ' + (e.type === "out" ? "out" : "in") + '">' + bubbleContent + (e.media_cdn && !e.media_cache_id ? '<div class="msg-time-row"><span class="msg-send-status msg-send-loading"></span></div>' : '') + '</div>';
         o._msgData = e;
-        t.appendChild(o);
-        t.scrollTop = t.scrollHeight;
-        
+
         var loadingEl = o.querySelector('.bubble-media-loading');
         if (loadingEl) {
             window._loadCdnMedia(loadingEl);
@@ -4039,6 +4084,7 @@ class WeChatiLinkBot:
                 }));
             }
         }
+        return o;
     };
 
     const _renderSendingMsg = function(e) {
@@ -4071,9 +4117,14 @@ class WeChatiLinkBot:
         } else {
             bubbleContent = '<div class="bubble-text">' + _escape(e.text || "") + '</div>';
         }
-        o.innerHTML = '<div class="bubble out">' + bubbleContent + '<div class="msg-time-row"><span class="msg-send-status msg-send-loading"></span><span class="msg-time">' + (e.time || "") + '</span></div></div>';
+        o.innerHTML = '<div class="bubble out">' + bubbleContent + '<div class="msg-time-row"><span class="msg-send-status msg-send-loading"></span></div></div>';
+        if (!e.ts) e.ts = Date.now() / 1000;
+        if (_shouldShowDivider(_state.lastRenderedMsg, e)) {
+            t.appendChild(_buildTimeDivider(e));
+        }
         t.appendChild(o);
         t.scrollTop = t.scrollHeight;
+        _state.lastRenderedMsg = e;
     };
 
     var _currentAudio = null;
@@ -4955,24 +5006,82 @@ class WeChatiLinkBot:
     };
     
     const _loadHistory = async function(e) {
-        const t = e ? `/history?user=${encodeURIComponent(e)}&limit=500` : "/history?limit=500";
+        _state.historyState = { loading: false, noMore: false, earliestId: null };
+        _state.lastRenderedMsg = null;
+        const t = e ? `/history?user=${encodeURIComponent(e)}&limit=50` : "/history?limit=50";
         const n = await _get(t);
         if (!n || n.error) return;
         const o = n.messages || [];
-        if (o.length === 0) return;
         const i = document.getElementById("messages-area");
         if (i) i.innerHTML = "";
         _state.displayedIds.clear();
-        o.forEach((function(e) {
-            _renderMsg(e);
-            if (e.id) _state.displayedIds.add(e.id);
-        }));
-        if (o.length > 0) {
-            const e = Math.max.apply(null, o.map((function(e) { return e.id || 0; })));
-            _state.lastMsgId = Math.max(_state.lastMsgId, e);
+        if (o.length === 0) {
+            _state.historyState.noMore = true;
+            return;
         }
+        o.forEach((function(m) {
+            _renderMsg(m);
+            if (m.id) _state.displayedIds.add(m.id);
+        }));
+        const ids = o.map((function(m) { return m.id || 0; }));
+        _state.historyState.earliestId = Math.min.apply(null, ids);
+        if (o.length < 50) _state.historyState.noMore = true;
+        const maxId = Math.max.apply(null, ids);
+        _state.lastMsgId = Math.max(_state.lastMsgId, maxId);
         const r = document.getElementById("messages-area");
         if (r) r.scrollTop = r.scrollHeight;
+    };
+
+    const _prependHistory = function(msgs) {
+        const t = document.getElementById("messages-area");
+        if (!t) return;
+        var anchor = t.firstElementChild;
+        while (anchor && anchor.classList && anchor.classList.contains('msg-time-divider')) {
+            var rm = anchor;
+            anchor = anchor.nextElementSibling;
+            rm.remove();
+        }
+        var firstExistingData = anchor ? anchor._msgData : null;
+        var prev = null;
+        msgs.forEach((function(m) {
+            if (_shouldShowDivider(prev, m)) {
+                t.insertBefore(_buildTimeDivider(m), anchor);
+            }
+            t.insertBefore(_buildMsgRow(m), anchor);
+            prev = m;
+        }));
+        if (firstExistingData && _shouldShowDivider(prev, firstExistingData)) {
+            t.insertBefore(_buildTimeDivider(firstExistingData), anchor);
+        }
+    };
+
+    const _loadMoreHistory = async function() {
+        if (!_state.currentUser || _state.historyState.loading || _state.historyState.noMore) return;
+        if (!_state.historyState.earliestId) { _state.historyState.noMore = true; return; }
+        _state.historyState.loading = true;
+        const user = _state.currentUser;
+        const q = `/history?user=${encodeURIComponent(user)}&limit=50&before_id=${_state.historyState.earliestId}`;
+        let n = null;
+        try { n = await _get(q); } catch (err) { n = null; }
+        if (_state.currentUser !== user) { _state.historyState.loading = false; return; }
+        if (!n || n.error) { _state.historyState.loading = false; return; }
+        const o = n.messages || [];
+        if (o.length === 0) {
+            _state.historyState.noMore = true;
+            _state.historyState.loading = false;
+            return;
+        }
+        const t = document.getElementById("messages-area");
+        if (!t) { _state.historyState.loading = false; return; }
+        const prevHeight = t.scrollHeight;
+        const prevTop = t.scrollTop;
+        _prependHistory(o);
+        const ids = o.map((function(m) { return m.id || 0; }));
+        _state.historyState.earliestId = Math.min(_state.historyState.earliestId, Math.min.apply(null, ids));
+        if (o.length < 50) _state.historyState.noMore = true;
+        o.forEach((function(m) { if (m.id) _state.displayedIds.add(m.id); }));
+        t.scrollTop = t.scrollHeight - prevHeight + prevTop;
+        _state.historyState.loading = false;
     };
     
     const _fetchMessages = async function() {
@@ -5718,6 +5827,10 @@ class WeChatiLinkBot:
     };
 
     const _initEvents = function() {
+        const msgArea = document.getElementById("messages-area");
+        if (msgArea) msgArea.addEventListener("scroll", function() {
+            if (this.scrollTop < 80) _loadMoreHistory();
+        });
         document.addEventListener("error", function(ev) {
             var img = ev.target;
             if (img.tagName === 'IMG' && img.classList.contains('bubble-media-img')) {
@@ -6009,55 +6122,34 @@ class WeChatiLinkBot:
         setInterval(_checkAnnouncement, 30000);
     };
 
-    const _generateFingerprint = function() {
-        try {
-            var canvas = document.createElement('canvas');
-            canvas.width = 200; canvas.height = 50;
-            var ctx = canvas.getContext('2d');
-            ctx.textBaseline = 'top';
-            ctx.font = '14px Arial';
-            ctx.fillStyle = '#f60';
-            ctx.fillRect(125, 1, 62, 20);
-            ctx.fillStyle = '#069';
-            ctx.fillText('ZynChatBox', 2, 15);
-            ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
-            ctx.fillText('ZynChatBox', 4, 17);
-            var dataUrl = canvas.toDataURL();
-            var fp = navigator.userAgent + '|' + screen.width + 'x' + screen.height + '|' + screen.colorDepth + '|' + new Date().getTimezoneOffset() + '|' + dataUrl;
-            var hash = 0;
-            for (var i = 0; i < fp.length; i++) {
-                var char = fp.charCodeAt(i);
-                hash = ((hash << 5) - hash) + char;
-                hash = hash & hash;
-            }
-            return Math.abs(hash).toString(36) + fp.length.toString(36);
-        } catch(e) {
-            return navigator.userAgent.replace(/[^a-zA-Z0-9]/g, '').substring(0, 32);
-        }
-    };
-
     const _initLockScreen = async function() {
-        var fingerprint = _generateFingerprint();
-        try {
-            var resp = await new Promise(function(resolve, reject) {
-                var o = new XMLHttpRequest();
-                o.open("POST", "/api/wasm/bot-fingerprint-login", true);
-                o.setRequestHeader("Content-Type", "application/json");
-                o.setRequestHeader("X-Session-Token", _state.token);
-                o.onload = function() {
-                    if (o.status >= 200 && o.status < 300) {
-                        try { resolve(JSON.parse(o.responseText)); } catch(e) { resolve({success: false}); }
-                    } else { resolve({success: false}); }
-                };
-                o.onerror = function() { resolve({success: false}); };
-                o.send(JSON.stringify({fingerprint: fingerprint, client_ip: _state.clientIP || ""}));
-            });
-            if (resp && resp.success && resp.session_token) {
-                _state.token = resp.session_token;
-                _afterAuth();
-                return;
-            }
-        } catch(e) {}
+        var rememberToken = "";
+        try { rememberToken = localStorage.getItem("zyn_remember_token") || ""; } catch(e) {}
+        if (rememberToken) {
+            try {
+                var resp = await new Promise(function(resolve, reject) {
+                    var o = new XMLHttpRequest();
+                    o.open("POST", "/api/wasm/bot-remember-login", true);
+                    o.setRequestHeader("Content-Type", "application/json");
+                    o.setRequestHeader("X-Session-Token", _state.token);
+                    o.onload = function() {
+                        if (o.status >= 200 && o.status < 300) {
+                            try { resolve(JSON.parse(o.responseText)); } catch(e) { resolve({success: false}); }
+                        } else { resolve({success: false}); }
+                    };
+                    o.onerror = function() { resolve({success: false}); };
+                    o.send(JSON.stringify({token: rememberToken}));
+                });
+                if (resp && resp.success && resp.session_token) {
+                    _state.token = resp.session_token;
+                    _afterAuth();
+                    return;
+                }
+                if (resp && resp.error && resp.error !== "尝试过多") {
+                    try { localStorage.removeItem("zyn_remember_token"); } catch(e) {}
+                }
+            } catch(e) {}
+        }
         var lockScreen = document.getElementById("lock-screen");
         if (lockScreen) lockScreen.classList.remove("hide");
         var app = document.getElementById("app");
@@ -6317,7 +6409,6 @@ class WeChatiLinkBot:
         if (!password) { errorEl.textContent = "请输入密码"; return; }
         if (submitBtn) submitBtn.disabled = true;
         errorEl.textContent = "";
-        var fingerprint = _generateFingerprint();
         try {
             var resp = await new Promise(function(resolve, reject) {
                 var o = new XMLHttpRequest();
@@ -6330,10 +6421,11 @@ class WeChatiLinkBot:
                     } else { resolve({success: false, error: "请求失败"}); }
                 };
                 o.onerror = function() { resolve({success: false, error: "网络错误"}); };
-                o.send(JSON.stringify({username: username, password: password, fingerprint: fingerprint, client_ip: _state.clientIP || ""}));
+                o.send(JSON.stringify({username: username, password: password, client_ip: _state.clientIP || ""}));
             });
             if (resp && resp.success && resp.session_token) {
                 _state.token = resp.session_token;
+                if (resp.remember_token) { try { localStorage.setItem("zyn_remember_token", resp.remember_token); } catch(e) {} }
                 _afterAuth();
             } else {
                 errorEl.textContent = (resp && resp.error) || "登录失败";
@@ -6388,6 +6480,7 @@ class WeChatiLinkBot:
             });
             if (resp && resp.success && resp.session_token) {
                 _state.token = resp.session_token;
+                if (resp.remember_token) { try { localStorage.setItem("zyn_remember_token", resp.remember_token); } catch(e) {} }
                 _afterAuth();
             } else {
                 errorEl.textContent = (resp && resp.error) || "注册失败";
@@ -6737,6 +6830,7 @@ class WeChatiLinkBot:
             try {
                 await _api("bot-logout", {});
             } catch(e) {}
+            try { localStorage.removeItem("zyn_remember_token"); } catch(e) {}
             _state.token = "";
             if (_state.pollInterval) { clearInterval(_state.pollInterval); _state.pollInterval = null; }
             var lockScreen = document.getElementById("lock-screen");
@@ -6914,7 +7008,7 @@ class WeChatiLinkBot:
         if (forceOfflineBtn) forceOfflineBtn.addEventListener("click", async function() {
             var index = document.getElementById("admin-force-offline-index").value.trim();
             if (!index) { _toast("请输入序号"); return; }
-            if (!confirm("确定要强制下线序号 " + index + " 的用户并删除指纹登录吗？")) return;
+            if (!confirm("确定要强制下线序号 " + index + " 的用户并删除自动登录吗？")) return;
             try {
                 var resp = await _api("admin-force-offline", {index: parseInt(index)});
                 if (resp && resp.success) { _toast("用户已强制下线"); document.getElementById("admin-force-offline-index").value = ""; _loadAdminUserMgmt(); }
@@ -7343,11 +7437,11 @@ window.ZynWasm.init();
                         return
                     self._handle_bot_login(data)
                     return
-                elif parsed.path == '/api/wasm/bot-fingerprint-login':
+                elif parsed.path == '/api/wasm/bot-remember-login':
                     data = self._parse_json_body()
                     if data is None:
                         return
-                    self._handle_bot_fingerprint_login(data)
+                    self._handle_bot_remember_login(data)
                     return
                 elif parsed.path == '/api/wasm/auth-login':
                     data = self._parse_json_body()
@@ -7483,9 +7577,6 @@ window.ZynWasm.init();
             
             def _parse_json_body(self):
                 content_length = int(self.headers.get('Content-Length', 0))
-                if content_length > 10485760:
-                    self._send_json({'success': False, 'error': '请求数据过大'}, 413)
-                    return None
                 body = self.rfile.read(content_length) if content_length else b'{}'
                 try:
                     return json.loads(body.decode('utf-8'))
@@ -7579,9 +7670,6 @@ window.ZynWasm.init();
                     if not image_base64:
                         self._send_json({'success': False, 'error': '图片数据不能为空'})
                         return
-                    if len(image_base64) > 20 * 1024 * 1024:
-                        self._send_json({'success': False, 'error': '图片数据过大'})
-                        return
                     if not target.ai_config.get("vision_api_url"):
                         self._send_json({'success': False, 'error': '识图API未配置'})
                         return
@@ -7657,9 +7745,6 @@ window.ZynWasm.init();
                     if not file_base64:
                         self._send_json({'success': False, 'error': '文件数据不能为空'})
                         return
-                    if len(file_base64) > 20 * 1024 * 1024:
-                        self._send_json({'success': False, 'error': '文件数据过大'})
-                        return
                     if not filename:
                         self._send_json({'success': False, 'error': '文件名不能为空'})
                         return
@@ -7681,9 +7766,7 @@ window.ZynWasm.init();
                     media_memory_text = bot._format_media_memory_for_account(target, user_id) if user_id else ""
                     original_text = prompt if prompt else ""
                     if target.ai_config.get("file_recognize_compat_mode"):
-                        max_size = target.ai_config.get("file_recognize_max_size", 512) * 1024
-                        truncated = file_text[:max_size]
-                        formatted_text = f"[用户发送了文件: {filename}]\n文件内容如下:\n{truncated}"
+                        formatted_text = f"[用户发送了文件: {filename}]\n文件内容如下:\n{file_text}"
                         if prompt:
                             formatted_text += f"\n额外要求: {prompt}"
                         if target.ai_config.get("api_url"):
@@ -7904,6 +7987,8 @@ html, body {
 .msg-time { font-size: 11px; color: var(--text-hint); margin-top: 4px; text-align: right; }
 .bubble.out .msg-time { color: rgba(255,255,255,0.65); }
 .msg-time-row { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 4px; }
+.msg-time-divider { align-self: center; text-align: center; font-size: 11px; color: var(--text-hint); background: rgba(0,0,0,0.05); border-radius: 6px; padding: 2px 8px; margin: 8px auto 2px; max-width: 60%; }
+[data-theme="dark"] .msg-time-divider { background: rgba(255,255,255,0.08); }
 .msg-send-status { display: inline-flex; align-items: center; justify-content: center; }
 .msg-send-loading { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
 .msg-send-fail { width: 18px; height: 18px; border-radius: 50%; background: #FF3B30; color: #fff; font-size: 12px; font-weight: 700; line-height: 18px; text-align: center; cursor: pointer; }
@@ -8037,6 +8122,12 @@ html, body {
 .about-row + .about-row { border-top: 0.5px solid var(--divider); }
 .about-label { font-size: 15px; color: var(--text-secondary); }
 .about-value { font-size: 15px; color: var(--text-primary); font-weight: 500; }
+.about-github-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 14px; margin-top: 12px; background: #181717; color: #ffffff; border: none; border-radius: 14px; font-size: 15px; font-weight: 600; cursor: pointer; text-decoration: none; box-shadow: 0 2px 10px rgba(0,0,0,0.18); transition: transform calc(0.2s * var(--anim-duration)) var(--ease-standard), opacity 0.2s, box-shadow 0.3s; }
+.about-github-btn:hover { opacity: 0.9; box-shadow: 0 4px 16px rgba(0,0,0,0.25); }
+.about-github-btn:active { transform: scale(0.96); opacity: 0.8; }
+.about-github-btn svg { width: 20px; height: 20px; fill: currentColor; flex-shrink: 0; }
+.about-github-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-theme="dark"] .about-github-btn { background: #ffffff; color: #181717; box-shadow: 0 2px 10px rgba(0,0,0,0.4); }
 
 .ai-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); display: none; align-items: center; justify-content: center; z-index: 10000; }
 .ai-modal.show { display: flex; animation: fadeIn 0.2s ease; }
@@ -8594,7 +8685,7 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                 </div>
                 <div class="setting-item">
                     <label class="setting-label">最大文件大小(KB)</label>
-                    <input type="number" id="file-recognize-max-size" class="setting-input" value="512" min="64" max="2048">
+                    <input type="number" id="file-recognize-max-size" class="setting-input" value="512">
                 </div>
                 <div class="setting-item">
                     <label class="setting-checkbox">
@@ -8667,6 +8758,10 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                         <div class="about-value" id="about-version">加载中...</div>
                     </div>
                 </div>
+                <a class="about-github-btn" href="https://github.com/zynsync/Zyn-iLink-ChatBox" target="_blank" rel="noopener noreferrer">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"></path></svg>
+                    <span>zynsync/Zyn-iLink-ChatBox</span>
+                </a>
             </div>
         </div>
     </div>
@@ -9662,36 +9757,45 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                 if result.get('success'):
                     new_token = result.get('session_token')
                     cookie = f'session_token={new_token}; Path=/; SameSite=Lax; HttpOnly; Max-Age=2592000' if new_token else None
-                    self._send_json({'success': True, 'session_token': new_token, 'username': result.get('username')}, cookies=[cookie] if cookie else None)
+                    self._send_json({'success': True, 'session_token': new_token, 'remember_token': result.get('remember_token'), 'username': result.get('username')}, cookies=[cookie] if cookie else None)
                 else:
                     self._send_json(result)
 
             def _handle_bot_login(self, data):
                 username = str(data.get('username', '')).strip()
                 password = str(data.get('password', ''))
-                fingerprint = str(data.get('fingerprint', ''))
                 server_ip = self._get_client_ip()
                 frontend_ip = str(data.get('client_ip', '')).strip()
                 client_ip = frontend_ip if frontend_ip and server_ip in ('127.0.0.1', '::1', 'localhost') else server_ip
-                result = bot._login_account(username, password, fingerprint, client_ip)
+                result = bot._login_account(username, password, client_ip)
                 if result.get('success'):
                     new_token = result.get('session_token')
                     cookie = f'session_token={new_token}; Path=/; SameSite=Lax; HttpOnly; Max-Age=2592000' if new_token else None
-                    self._send_json({'success': True, 'session_token': new_token, 'username': result.get('username')}, cookies=[cookie] if cookie else None)
+                    self._send_json({'success': True, 'session_token': new_token, 'remember_token': result.get('remember_token'), 'username': result.get('username')}, cookies=[cookie] if cookie else None)
                 else:
                     self._send_json(result)
 
-            def _handle_bot_fingerprint_login(self, data):
-                fingerprint = str(data.get('fingerprint', ''))
-                server_ip = self._get_client_ip()
-                frontend_ip = str(data.get('client_ip', '')).strip()
-                client_ip = frontend_ip if frontend_ip and server_ip in ('127.0.0.1', '::1', 'localhost') else server_ip
-                result = bot._fingerprint_login(fingerprint, client_ip)
+            def _handle_bot_remember_login(self, data):
+                token = str(data.get('token', ''))
+                client_ip = self._get_client_ip()
+                now = time.time()
+                attempt_info = bot._login_attempts.get(client_ip, {'count': 0, 'lockout': 0})
+                if now < attempt_info.get('lockout', 0):
+                    remaining = int(attempt_info['lockout'] - now)
+                    self._send_json({'success': False, 'error': f'尝试过多，请{remaining}秒后再试'})
+                    return
+                result = bot._remember_login(token, client_ip)
                 if result.get('success'):
+                    bot._login_attempts.pop(client_ip, None)
                     new_token = result.get('session_token')
                     cookie = f'session_token={new_token}; Path=/; SameSite=Lax; HttpOnly; Max-Age=2592000' if new_token else None
                     self._send_json({'success': True, 'session_token': new_token, 'username': result.get('username')}, cookies=[cookie] if cookie else None)
                 else:
+                    attempt_info['count'] = attempt_info.get('count', 0) + 1
+                    if attempt_info['count'] >= 10:
+                        attempt_info['lockout'] = now + 300
+                        attempt_info['count'] = 0
+                    bot._login_attempts[client_ip] = attempt_info
                     self._send_json(result)
 
             def _handle_auth_login(self, data):
@@ -9991,9 +10095,7 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                     username = bot._account_sessions.pop(session_token, None)
                     bot._verified_sessions.pop(session_token, None)
                     if username:
-                        for fp, uname in list(bot._fingerprint_sessions.items()):
-                            if uname == username:
-                                del bot._fingerprint_sessions[fp]
+                        bot._revoke_remember_tokens(username)
                         print(f"[多账户] 账户退出登录: {username}")
                 self._send_json({'success': True})
 
@@ -10004,8 +10106,6 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                     return
                 online_usernames = set()
                 for tok, uname in bot._account_sessions.items():
-                    online_usernames.add(uname)
-                for tok, uname in bot._fingerprint_sessions.items():
                     online_usernames.add(uname)
                 users = []
                 for username, acc in bot._accounts.items():
@@ -10054,9 +10154,7 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                 for tok in old_sessions:
                     bot._account_sessions.pop(tok, None)
                     bot._verified_sessions.pop(tok, None)
-                for fp, uname in list(bot._fingerprint_sessions.items()):
-                    if uname == username:
-                        del bot._fingerprint_sessions[fp]
+                bot._revoke_remember_tokens(username)
                 del bot._accounts[username]
                 bot._save_accounts()
                 try:
@@ -10144,9 +10242,7 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                     bot._account_sessions.pop(tok, None)
                     bot._verified_sessions.pop(tok, None)
                     bot._session_tokens.pop(tok, None)
-                for fp, uname in list(bot._fingerprint_sessions.items()):
-                    if uname == username:
-                        del bot._fingerprint_sessions[fp]
+                bot._revoke_remember_tokens(username)
                 print(f"[管理员] 管理员强制下线用户: {username}")
                 self._send_json({'success': True})
 
@@ -10449,19 +10545,28 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                 try:
                     params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                     user_id = params.get('user', [None])[0]
-                    limit_str = params.get('limit', ['200'])[0]
+                    limit_str = params.get('limit', ['50'])[0]
+                    before_id_str = params.get('before_id', [None])[0]
                     try:
-                        limit = min(int(limit_str), 500)
+                        limit = max(1, min(int(limit_str), 1000))
                     except (ValueError, TypeError):
-                        limit = 200
+                        limit = 50
+                    before_id = None
+                    if before_id_str:
+                        try:
+                            before_id = int(before_id_str)
+                        except (ValueError, TypeError):
+                            before_id = None
                     account = self._resolve_account()
                     target = account if account else bot
                     if user_id:
-                        history_msgs = target.get_user_messages(user_id, limit)
+                        history_msgs = target.get_user_messages(user_id, 0)
                     else:
                         with target._msg_lock:
-                            all_msgs = list(target._messages) if target._messages else []
-                        history_msgs = all_msgs[-limit:]
+                            history_msgs = list(target._messages) if target._messages else []
+                    if before_id is not None:
+                        history_msgs = [m for m in history_msgs if m.get('id', 0) < before_id]
+                    history_msgs = history_msgs[-limit:]
                     enriched = []
                     for msg in history_msgs:
                         msg_copy = dict(msg)
@@ -10482,7 +10587,7 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                         'total': 0,
                         'found': 0,
                         'user_id': '',
-                        'limit': 200
+                        'limit': 50
                     })
             
             def _serve_captcha(self):
@@ -10635,33 +10740,6 @@ var _token = "__SESSION_TOKEN__";
     var registerSubmitBtn = document.getElementById("bot-register-submit");
     var errorEl = document.getElementById("lock-screen-error");
     var _emailRegisterEnabled = false;
-
-    function _generateFingerprint() {
-        try {
-            var canvas = document.createElement('canvas');
-            canvas.width = 200; canvas.height = 50;
-            var ctx = canvas.getContext('2d');
-            ctx.textBaseline = 'top';
-            ctx.font = '14px Arial';
-            ctx.fillStyle = '#f60';
-            ctx.fillRect(125, 1, 62, 20);
-            ctx.fillStyle = '#069';
-            ctx.fillText('ZynChatBox', 2, 15);
-            ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
-            ctx.fillText('ZynChatBox', 4, 17);
-            var dataUrl = canvas.toDataURL();
-            var fp = navigator.userAgent + '|' + screen.width + 'x' + screen.height + '|' + screen.colorDepth + '|' + new Date().getTimezoneOffset() + '|' + dataUrl;
-            var hash = 0;
-            for (var i = 0; i < fp.length; i++) {
-                var char = fp.charCodeAt(i);
-                hash = ((hash << 5) - hash) + char;
-                hash = hash & hash;
-            }
-            return Math.abs(hash).toString(36) + fp.length.toString(36);
-        } catch(e) {
-            return navigator.userAgent.replace(/[^a-zA-Z0-9]/g, '').substring(0, 32);
-        }
-    }
 
     if (showRegisterBtn) showRegisterBtn.addEventListener("click", function() {
         if (loginForm) loginForm.style.display = "none";
@@ -10889,7 +10967,6 @@ var _token = "__SESSION_TOKEN__";
         if (!password) { errorEl.textContent = "请输入密码"; return; }
         if (loginSubmitBtn) loginSubmitBtn.disabled = true;
         errorEl.textContent = "";
-        var fingerprint = _generateFingerprint();
         try {
             var resp = await new Promise(function(resolve, reject) {
                 var o = new XMLHttpRequest();
@@ -10902,10 +10979,11 @@ var _token = "__SESSION_TOKEN__";
                     } else { resolve({success: false, error: "请求失败"}); }
                 };
                 o.onerror = function() { resolve({success: false, error: "网络错误"}); };
-                o.send(JSON.stringify({username: username, password: password, fingerprint: fingerprint, client_ip: window._clientIP || ""}));
+                o.send(JSON.stringify({username: username, password: password, client_ip: window._clientIP || ""}));
             });
             if (resp && resp.success && resp.session_token) {
                 _token = resp.session_token;
+                if (resp.remember_token) { try { localStorage.setItem("zyn_remember_token", resp.remember_token); } catch(e) {} }
                 window.location.href = '/';
             } else {
                 errorEl.textContent = (resp && resp.error) || "登录失败";
@@ -10955,6 +11033,7 @@ var _token = "__SESSION_TOKEN__";
             });
             if (resp && resp.success && resp.session_token) {
                 _token = resp.session_token;
+                if (resp.remember_token) { try { localStorage.setItem("zyn_remember_token", resp.remember_token); } catch(e) {} }
                 window.location.href = '/';
             } else {
                 errorEl.textContent = (resp && resp.error) || "注册失败";
@@ -10967,11 +11046,13 @@ var _token = "__SESSION_TOKEN__";
     }
 
     (async function() {
-        var fingerprint = _generateFingerprint();
+        var rememberToken = "";
+        try { rememberToken = localStorage.getItem("zyn_remember_token") || ""; } catch(e) {}
+        if (!rememberToken) return;
         try {
             var resp = await new Promise(function(resolve, reject) {
                 var o = new XMLHttpRequest();
-                o.open("POST", "/api/wasm/bot-fingerprint-login", true);
+                o.open("POST", "/api/wasm/bot-remember-login", true);
                 o.setRequestHeader("Content-Type", "application/json");
                 o.setRequestHeader("X-Session-Token", _token);
                 o.onload = function() {
@@ -10980,12 +11061,15 @@ var _token = "__SESSION_TOKEN__";
                     } else { resolve({success: false}); }
                 };
                 o.onerror = function() { resolve({success: false}); };
-                o.send(JSON.stringify({fingerprint: fingerprint, client_ip: window._clientIP || ""}));
+                o.send(JSON.stringify({token: rememberToken}));
             });
             if (resp && resp.success && resp.session_token) {
                 _token = resp.session_token;
                 window.location.href = '/';
                 return;
+            }
+            if (resp && resp.error && resp.error.indexOf("尝试过多") === -1) {
+                try { localStorage.removeItem("zyn_remember_token"); } catch(e) {}
             }
         } catch(e) {}
     })();
@@ -11284,7 +11368,7 @@ function doLogin(e) {
             def _parse_json_body(self):
                 try:
                     length = int(self.headers.get('Content-Length', 0))
-                    if length <= 0 or length > 1024 * 1024:
+                    if length <= 0:
                         return {}
                     raw = self.rfile.read(length)
                     return json.loads(raw.decode('utf-8'))
@@ -11986,7 +12070,7 @@ function doLogin(e) {
             req = urllib.request.Request(vision_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-                return result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                return result.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
         except Exception as e:
             print(f"[VISION API] 异常: {e}")
             return None
@@ -12031,9 +12115,7 @@ function doLogin(e) {
                     messages.append({"role": "user", "content": msg.get("text", "")})
                 elif msg.get("type") == "out":
                     messages.append({"role": "assistant", "content": msg.get("text", "")})
-            max_size = account.ai_config.get("file_recognize_max_size", 512) * 1024
-            truncated = file_text[:max_size]
-            user_msg = f"[用户发送了文件: {filename}]\n文件内容如下:\n{truncated}"
+            user_msg = f"[用户发送了文件: {filename}]\n文件内容如下:\n{file_text}"
             if original_text:
                 user_msg += f"\n额外要求: {original_text}"
             messages.append({"role": "user", "content": user_msg})
@@ -12044,7 +12126,7 @@ function doLogin(e) {
             req = urllib.request.Request(api_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-                return result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                return result.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
         except Exception as e:
             print(f"[FILE RECOGNIZE API] 异常: {e}")
             return None
@@ -13102,7 +13184,7 @@ def main():
     print("╔" + "═" * 58 + "╗")
     print("║" + " " * 12 + "Zynsync iLink ChatBox" + " " * 18 + "║")
     print("║" + " " * 18 + "-无忧传递-" + " " * 22 + "║")
-    print("║" + " " * 20 + "v3.2.4" + " " * 26 + "║")
+    print("║" + " " * 20 + "v3.2.5" + " " * 26 + "║")
     print("╚" + "═" * 58 + "╝")
     print('注意，一定要在当前控制台为一个用户设置为管理员账号（命令 3 ），否则管理员面板功能无法使用!-管理员账号打开网页后即可在设置里看到管理员面板选项这一项!')
     
@@ -13206,9 +13288,7 @@ def main():
                             for tok in old_sessions:
                                 bot._account_sessions.pop(tok, None)
                                 bot._verified_sessions.pop(tok, None)
-                            for fp, un in list(bot._fingerprint_sessions.items()):
-                                if un == target:
-                                    del bot._fingerprint_sessions[fp]
+                            bot._revoke_remember_tokens(target)
                             del bot._accounts[target]
                             bot._save_accounts()
                             try:
