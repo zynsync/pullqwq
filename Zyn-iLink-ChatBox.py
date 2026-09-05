@@ -5176,16 +5176,36 @@ class WeChatiLinkBot:
         if (el) el.classList.remove("show");
     };
     
-    const _readFileAsBase64 = function(file) {
+    const _uploadMediaFile = function(mediaType, file, thumbnailData) {
         return new Promise(function(resolve, reject) {
-            var reader = new FileReader();
-            reader.onload = function() {
-                var result = reader.result;
-                var base64 = result.split(",")[1] || result;
-                resolve(base64);
+            const o = new XMLHttpRequest();
+            const q = "?media_type=" + encodeURIComponent(mediaType) + "&filename=" + encodeURIComponent(file.name);
+            o.open("POST", "/api/wasm/upload-media" + q, true);
+            o.setRequestHeader("Content-Type", "application/octet-stream");
+            o.setRequestHeader("X-Session-Token", _state.token);
+            if (thumbnailData) o.setRequestHeader("X-Thumbnail", thumbnailData);
+            o.timeout = 0;
+            _showUploadProgress("正在发送 0%");
+            o.upload.onprogress = function(ev) {
+                if (ev.lengthComputable && ev.total > 0) {
+                    _showUploadProgress("正在发送 " + Math.round(ev.loaded * 100 / ev.total) + "%");
+                }
             };
-            reader.onerror = function() { reject(reader.error); };
-            reader.readAsDataURL(file);
+            o.upload.onload = function() {
+                _showUploadProgress("上传完成，正在发送到微信...");
+            };
+            o.onload = function() {
+                _hideUploadProgress();
+                if (o.status === 401) { _onAuthFail(); reject(new Error("登录已失效")); return; }
+                if (o.status >= 200 && o.status < 300) {
+                    try { resolve(JSON.parse(o.responseText)); } catch(e) { resolve({}); }
+                } else {
+                    reject(new Error(o.statusText || ("HTTP " + o.status)));
+                }
+            };
+            o.onerror = function() { _hideUploadProgress(); reject(new Error("Network Error")); };
+            o.ontimeout = function() { _hideUploadProgress(); reject(new Error("请求超时")); };
+            o.send(file);
         });
     };
     
@@ -5282,9 +5302,8 @@ class WeChatiLinkBot:
         _renderSendingMsg(placeholderMsg);
         
         try {
-            var base64Data = await _readFileAsBase64(file);
             var thumbnailData = "";
-            
+
             if (mediaType === "image" || mediaType === "video") {
                 try {
                     var fullThumb = await _generateThumbnail(file, 300, 300);
@@ -5293,16 +5312,8 @@ class WeChatiLinkBot:
                     }
                 } catch(e) {}
             }
-            
-            var payload = {
-                media_type: mediaType,
-                filename: file.name,
-                file_data: base64Data,
-                file_size: file.size,
-                thumbnail: thumbnailData
-            };
-            
-            var result = await _api("send-media", payload, 900000);
+
+            var result = await _uploadMediaFile(mediaType, file, thumbnailData);
             
             var sendingEl = document.querySelector('[data-sending-id="' + placeholderMsg.id + '"]');
             
@@ -7506,7 +7517,11 @@ window.ZynWasm.init();
                     self.send_response(401)
                     self.end_headers()
                     return
-                
+
+                if parsed.path == '/api/wasm/upload-media':
+                    self._handle_upload_media()
+                    return
+
                 data = self._parse_json_body()
                 if data is None:
                     return
@@ -9516,18 +9531,60 @@ body.keyboard-open #app { height: auto; min-height: 100vh; min-height: 100dvh; }
                     filename = data.get('filename', 'file')
                     file_data_b64 = data.get('file_data', '')
                     thumbnail_b64 = data.get('thumbnail', '')
-                    account = self._resolve_account()
-                    target = account if account else bot
                     if not file_data_b64:
                         self._send_json({'success': False, 'error': '文件数据为空'})
-                        return
-                    if not target._current_user:
-                        self._send_json({'success': False, 'error': '没有选择用户'})
                         return
                     try:
                         file_bytes = base64.b64decode(file_data_b64)
                     except Exception:
                         self._send_json({'success': False, 'error': '文件数据解码失败'})
+                        return
+                    self._send_media_core(media_type, filename, file_bytes, thumbnail_b64)
+                except Exception as e:
+                    print(f"[WEB] 媒体发送异常: {e}")
+                    self._send_json({'success': False, 'error': '操作失败'})
+
+            def _handle_upload_media(self):
+                try:
+                    parsed = urllib.parse.urlparse(self.path)
+                    params = urllib.parse.parse_qs(parsed.query)
+                    media_type = (params.get('media_type', [''])[0] or '').strip()
+                    filename = (params.get('filename', [''])[0] or '').strip() or 'file'
+                    thumbnail_b64 = self.headers.get('X-Thumbnail', '') or ''
+                    try:
+                        content_length = int(self.headers.get('Content-Length', 0))
+                    except (ValueError, TypeError):
+                        content_length = 0
+                    if content_length <= 0:
+                        self._send_json({'success': False, 'error': '文件数据为空'})
+                        return
+                    chunks = []
+                    received = 0
+                    while received < content_length:
+                        chunk = self.rfile.read(min(262144, content_length - received))
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        received += len(chunk)
+                    if received != content_length:
+                        self._send_json({'success': False, 'error': '文件接收不完整'})
+                        return
+                    file_bytes = b''.join(chunks)
+                    print(f"[WEB] 流式接收上传完成: type={media_type}, filename={filename}, size={received} bytes")
+                    self._send_media_core(media_type, filename, file_bytes, thumbnail_b64)
+                except Exception as e:
+                    print(f"[WEB] 媒体上传异常: {e}")
+                    try:
+                        self._send_json({'success': False, 'error': '操作失败'})
+                    except Exception:
+                        pass
+
+            def _send_media_core(self, media_type, filename, file_bytes, thumbnail_b64):
+                try:
+                    account = self._resolve_account()
+                    target = account if account else bot
+                    if not target._current_user:
+                        self._send_json({'success': False, 'error': '没有选择用户'})
                         return
                     print(f"[WEB] 收到媒体发送请求: type={media_type}, filename={filename}, size={len(file_bytes)} bytes, user={target._current_user}")
                     success = False
