@@ -614,6 +614,8 @@ input, textarea { font-family: inherit; }
 
   var engine = null;
   var hls = null;
+  var hlsRetries = 0;
+  var loadTimer = null;
   var state = {
     episodes: [],
     index: 0,
@@ -1598,17 +1600,62 @@ input, textarea { font-family: inherit; }
     E.player.appendChild(p);
   }
 
+  function markLoadStart() {
+    E.spinner.classList.remove("hidden");
+    clearTimeout(loadTimer);
+    loadTimer = setTimeout(function () {
+      loadTimer = null;
+      if (E.video.readyState >= 2) return;
+      E.spinner.classList.add("hidden");
+      toast("视频加载失败");
+    }, 30000);
+  }
+
+  function markLoadEnd() {
+    clearTimeout(loadTimer);
+    loadTimer = null;
+    E.spinner.classList.add("hidden");
+  }
+
   function loadSource(url) {
     state.url = url;
     var proxied = "/api/proxy?url=" + encodeURIComponent(url) + (state.referer ? "&referer=" + encodeURIComponent(state.referer) : "");
     if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
+    hlsRetries = 0;
     var isM3u8 = /\.m3u8(\?|$)/i.test(url) || url.indexOf("m3u8") !== -1;
+    markLoadStart();
     if (isM3u8 && window.Hls && window.Hls.isSupported()) {
-      hls = new window.Hls({ lowLatencyMode: false, enableWorker: true });
+      hls = new window.Hls({
+        lowLatencyMode: false,
+        enableWorker: true,
+        manifestLoadingTimeOut: 60000,
+        manifestLoadingMaxRetry: 6,
+        manifestLoadingRetryDelay: 1000,
+        levelLoadingTimeOut: 60000,
+        levelLoadingMaxRetry: 8,
+        fragLoadingTimeOut: 60000,
+        fragLoadingMaxRetry: 10
+      });
       hls.loadSource(proxied);
       hls.attachMedia(E.video);
       hls.on(window.Hls.Events.ERROR, function (evt, data) {
-        if (data && data.fatal) toast("HLS 播放出错：" + data.type);
+        if (!data || !data.fatal) return;
+        if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && hlsRetries < 4) {
+          hlsRetries++;
+          markLoadStart();
+          setTimeout(function () {
+            if (!hls) return;
+            try { hls.loadSource(proxied); hls.startLoad(); } catch (e) {}
+          }, 900 * hlsRetries);
+          return;
+        }
+        if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && hlsRetries < 4) {
+          hlsRetries++;
+          try { hls.recoverMediaError(); } catch (e) {}
+          return;
+        }
+        markLoadEnd();
+        toast("视频加载失败");
       });
     } else {
       E.video.src = proxied;
@@ -1684,8 +1731,12 @@ input, textarea { font-family: inherit; }
   function leavePlayer() {
     E.video.pause();
     if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
+    clearTimeout(loadTimer);
+    loadTimer = null;
+    hlsRetries = 0;
     E.video.removeAttribute("src");
     E.video.load();
+    E.spinner.classList.add("hidden");
     clearDanmaku();
     closeMenus();
     var p = document.getElementById("epPanel");
@@ -1852,13 +1903,19 @@ input, textarea { font-family: inherit; }
     E.video.addEventListener("pause", function () { updatePlayIcon(); showPanel(true); });
     E.video.addEventListener("timeupdate", updateProgress);
     E.video.addEventListener("progress", updateProgress);
-    E.video.addEventListener("loadedmetadata", function () { E.spinner.classList.add("hidden"); updateProgress(); });
+    E.video.addEventListener("loadedmetadata", function () { markLoadEnd(); updateProgress(); });
+    E.video.addEventListener("loadeddata", function () { markLoadEnd(); });
+    E.video.addEventListener("canplay", function () { markLoadEnd(); });
+    E.video.addEventListener("playing", function () { markLoadEnd(); });
     E.video.addEventListener("waiting", function () { E.spinner.classList.remove("hidden"); });
-    E.video.addEventListener("playing", function () { E.spinner.classList.add("hidden"); });
-    E.video.addEventListener("canplay", function () { E.spinner.classList.add("hidden"); });
-    E.video.addEventListener("error", function () { E.spinner.classList.add("hidden"); toast("视频加载失败"); });
+    E.video.addEventListener("stalled", function () { if (!E.video.paused) E.spinner.classList.remove("hidden"); });
+    E.video.addEventListener("error", function () {
+      if (E.video.error && E.video.error.code === 1) return;
+      if (loadTimer) return;
+      markLoadStart();
+    });
     E.video.addEventListener("ended", function () {
-      E.spinner.classList.add("hidden");
+      markLoadEnd();
       if (SETTINGS.autoPlayNext && state.index < state.episodes.length - 1) switchEpisode(state.index + 1);
     });
   }
