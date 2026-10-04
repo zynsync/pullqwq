@@ -399,7 +399,7 @@ input, textarea { font-family: inherit; }
     buttonSkipTime: 80,
     arrowKeySkipTime: 10,
     defaultShortcutForwardPlaySpeed: 2,
-    panelHideTime: 4000,
+    panelHideTime: 8000,
     superResolution: 0,
     aspectRatio: 1
   };
@@ -1728,7 +1728,7 @@ input, textarea { font-family: inherit; }
     E.speedText.textContent = state.speed.toFixed(1) + "x";
     E.speedHud.classList.add("show");
     clearTimeout(E.speedHud._t);
-    E.speedHud._t = setTimeout(function () { E.speedHud.classList.remove("show"); }, 1200);
+    E.speedHud._t = setTimeout(function () { E.speedHud.classList.remove("show"); }, 2000);
   }
 
   function showAdjustHud(type, value) {
@@ -1737,7 +1737,7 @@ input, textarea { font-family: inherit; }
     E.adjustSep.style.left = Math.round(value * 100) + "%";
     E.adjustHud.classList.add("show");
     clearTimeout(state.adjustTimer);
-    state.adjustTimer = setTimeout(function () { E.adjustHud.classList.remove("show"); }, 650);
+    state.adjustTimer = setTimeout(function () { E.adjustHud.classList.remove("show"); }, 2000);
   }
 
   function showSeekHud(visible) {
