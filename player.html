@@ -404,13 +404,22 @@ input, textarea { font-family: inherit; }
     aspectRatio: 1
   };
 
+  var EPHEMERAL_KEYS = ["panelHideTime"];
+
   try {
     var saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+    EPHEMERAL_KEYS.forEach(function (k) { delete saved[k]; });
     Object.keys(saved).forEach(function (k) { if (k in SETTINGS) SETTINGS[k] = saved[k]; });
   } catch (e) {}
 
   function saveSettings() {
-    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(SETTINGS)); } catch (e) {}
+    try {
+      var out = {};
+      Object.keys(SETTINGS).forEach(function (k) {
+        if (EPHEMERAL_KEYS.indexOf(k) < 0) out[k] = SETTINGS[k];
+      });
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(out));
+    } catch (e) {}
   }
 
   var SHIELD = [];
