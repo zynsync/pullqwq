@@ -1,0 +1,2113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Kazumi 网页播放器</title>
+<style>
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; padding: 0; height: 100%; background: #000; color: #fff;
+  font-family: "MiSans", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  overflow: hidden; }
+button { font-family: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+input, textarea { font-family: inherit; }
+.hidden { display: none !important; }
+
+#entry { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 50% 0%, #14202b 0%, #0b0f13 60%, #05070a 100%); padding: 20px; overflow: auto; }
+.entryCard { width: 100%; max-width: 720px; background: #16191e; border: 1px solid #262b33;
+  border-radius: 20px; padding: 28px; box-shadow: 0 24px 60px rgba(0,0,0,.55); }
+.entryHead { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.entryLogo { width: 40px; height: 40px; border-radius: 12px; background: #00AEEC; color: #001018;
+  display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 20px; }
+.entryTitle { font-size: 22px; font-weight: 700; letter-spacing: .5px; }
+.entrySub { color: #8b95a3; font-size: 13px; margin: 10px 0 22px; line-height: 1.7; }
+.field { margin-bottom: 16px; }
+.field > label { display: block; font-size: 13px; color: #9aa4b2; margin-bottom: 8px; }
+.textInput, .areaInput { width: 100%; background: #1f242b; border: 1px solid #2c333d; color: #fff;
+  border-radius: 10px; padding: 11px 12px; font-size: 14px; outline: none; }
+.textInput:focus, .areaInput:focus { border-color: #00AEEC; }
+.areaInput { min-height: 132px; resize: vertical; line-height: 1.6; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+.entryRow { display: flex; gap: 12px; flex-wrap: wrap; }
+.entryRow > .field { flex: 1 1 220px; }
+.btnPrimary, .btnGhost { border-radius: 10px; padding: 12px 20px; font-size: 15px; font-weight: 600; }
+.btnPrimary { background: #00AEEC; color: #001018; }
+.btnPrimary:active { opacity: .85; }
+.btnGhost { background: #232a33; color: #d5dde7; border: 1px solid #303845; }
+.entryActions { display: flex; gap: 12px; margin-top: 22px; flex-wrap: wrap; }
+.historyList { margin-top: 24px; border-top: 1px solid #242a32; padding-top: 16px; }
+.historyItem { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; color: #c6cfda; }
+.historyItem:hover { background: #1e242c; }
+.historyItem span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.muted { color: #6d7683; font-size: 12px; }
+
+#player { position: fixed; inset: 0; background: #000; overflow: hidden; cursor: default;
+  -webkit-user-select: none; user-select: none; }
+#player.hideCursor { cursor: none; }
+#stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  touch-action: none; }
+#video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+#stage.r43 { }
+#stage.r43 #video { width: auto; height: 100%; max-width: 100%; aspect-ratio: 4/3; object-fit: fill; }
+#danmaku { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 3; }
+#spinner { position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; margin: -22px 0 0 -22px;
+  border: 3px solid rgba(255,255,255,.22); border-top-color: #00AEEC; border-radius: 50%;
+  animation: spin .9s linear infinite; z-index: 4; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.scrim { position: absolute; left: 0; right: 0; pointer-events: none; z-index: 5;
+  transition: opacity .3s ease, transform .3s ease; }
+#scrimTop { top: 0; height: 50px; background: linear-gradient(180deg, rgba(0,0,0,.45), transparent); }
+#scrimBottom { bottom: 0; height: 100px; background: linear-gradient(0deg, rgba(0,0,0,.45), transparent); }
+.panelHidden .scrim { opacity: 0; }
+.panelHidden #topBar { opacity: 0; transform: translateY(-100%); pointer-events: none; }
+.panelHidden #bottomBar { opacity: 0; transform: translateY(100%); pointer-events: none; }
+.panelHidden #rightControls { opacity: 0; transform: translateX(100%); pointer-events: none; }
+
+#topBar { position: absolute; top: 0; left: 0; right: 0; z-index: 6; display: flex; align-items: center;
+  gap: 2px; padding: 0 4px; transition: opacity .3s ease, transform .3s ease; }
+#bottomBar { position: absolute; bottom: 0; left: 0; right: 0; z-index: 6; padding: 0 6px 4px;
+  transition: opacity .3s ease, transform .3s ease; }
+#rightControls { position: absolute; right: 4px; top: 0; bottom: 0; z-index: 6; display: flex;
+  flex-direction: column; justify-content: center; gap: 6px; transition: opacity .3s ease, transform .3s ease; }
+
+.iconBtn { width: 40px; height: 40px; border-radius: 50%; display: inline-flex; align-items: center;
+  justify-content: center; flex: 0 0 auto; transition: background .15s ease; }
+.iconBtn:hover { background: rgba(255,255,255,.14); }
+.iconBtn svg { width: 24px; height: 24px; display: block; }
+.iconBtn.small svg { width: 20px; height: 20px; }
+.iconBtn:disabled { opacity: .5; cursor: default; }
+.textBtn { padding: 8px 12px; border-radius: 10px; font-size: 14px; font-weight: 500; white-space: nowrap; }
+.textBtn:hover { background: rgba(255,255,255,.14); }
+#titleText { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 16px; color: #fff; padding: 0 4px; }
+.spinIcon svg { animation: spin .9s linear infinite; }
+
+#transport { display: flex; flex-direction: column; gap: 2px; padding: 0 4px; }
+#progressRow { display: flex; align-items: center; gap: 10px; padding: 0 10px; }
+#progress { position: relative; flex: 1; height: 32px; display: flex; align-items: center; cursor: pointer;
+  touch-action: none; user-select: none; }
+#progress .track { position: absolute; left: 0; right: 0; height: 4px; border-radius: 2px; background: rgba(255,255,255,.32); }
+#progress .buffer { position: absolute; left: 0; height: 4px; border-radius: 2px; background: rgba(255,255,255,.5); }
+#progress .played { position: absolute; left: 0; height: 4px; border-radius: 2px; background: #00AEEC; }
+#progress .thumb { position: absolute; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%;
+  background: #00AEEC; box-shadow: 0 0 0 0 rgba(0,174,236,.35); transition: box-shadow .15s ease; }
+#progress:hover .thumb, #progress.dragging .thumb { box-shadow: 0 0 18px 6px rgba(0,174,236,.45); }
+#progress .tlabel { position: absolute; bottom: 26px; font-size: 12px; font-variant-numeric: tabular-nums;
+  color: #fff; background: rgba(0,0,0,.6); padding: 2px 6px; border-radius: 6px; white-space: nowrap; display: none; }
+#progress .tlabel.left { left: 0; }
+#progress .tlabel.right { right: 0; }
+#progress.showLabels .tlabel { display: block; }
+
+#controlRow { display: flex; align-items: center; gap: 2px; padding: 0 6px; }
+#timeLabel { font-size: 16px; color: #fff; font-variant-numeric: tabular-nums; padding: 0 6px; white-space: nowrap; }
+#centerControls { flex: 1; display: flex; align-items: center; justify-content: center; gap: 2px; min-width: 0; }
+#danmakuInput { display: flex; align-items: center; max-width: 500px; width: 100%; height: 33px;
+  background: rgba(255,255,255,.38); border-radius: 8px; padding: 0 4px 0 8px; margin: 0 4px; }
+#danmakuInput input { flex: 1; min-width: 0; background: transparent; border: 0; outline: none; color: #fff; font-size: 15px; }
+#danmakuInput input::placeholder { color: rgba(255,255,255,.6); }
+#danmakuSend { background: #00AEEC; color: #001018; border-radius: 8px; padding: 5px 12px; font-size: 14px; font-weight: 600; }
+#danmakuSend:disabled { background: rgba(255,255,255,.25); color: rgba(255,255,255,.6); }
+.compact #timeLabel { font-size: 12px; padding: 0 4px; }
+.compact #danmakuInput, .compact #centerControls .wideOnly { display: none; }
+
+#hudLayer { position: absolute; left: 0; right: 0; top: 25px; z-index: 7; display: flex; justify-content: center;
+  pointer-events: none; }
+.hud { display: none; align-items: center; background: rgba(28,30,34,.94); border: 1px solid rgba(255,255,255,.12);
+  border-radius: 30px; box-shadow: 0 12px 24px rgba(0,0,0,.28); }
+.hud.show { display: flex; animation: hudIn .18s ease-out; }
+@keyframes hudIn { from { opacity: 0; transform: translateY(-8px) scale(.92); } to { opacity: 1; transform: none; } }
+#adjustHud { width: 200px; padding: 4px 8px; gap: 8px; }
+#adjustHud .hudIcon { width: 32px; height: 32px; border-radius: 20px; background: rgba(0,174,236,.22);
+  display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+#adjustHud .hudIcon svg { width: 20px; height: 20px; }
+#adjustHud .hudBar { flex: 1; height: 32px; border-radius: 12px; background: rgba(255,255,255,.16); overflow: hidden; position: relative; }
+#adjustHud .hudBar i { position: absolute; left: 0; top: 0; bottom: 0; background: #00AEEC; border-radius: 12px; }
+#adjustHud .hudSep { width: 4px; height: 40px; border-radius: 2px; background: #fff; position: absolute;
+  top: -4px; margin-left: -2px; }
+#adjustHud.hideTrack .hudBar i { display: none; }
+#seekHud { width: 248px; padding: 8px 10px; gap: 10px; border-radius: 30px; position: relative; overflow: hidden; }
+#seekHud .hudBg { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(0,174,236,.22); }
+#seekHud .hudIcon { width: 36px; height: 36px; border-radius: 20px; background: rgba(0,174,236,.22);
+  display: flex; align-items: center; justify-content: center; flex: 0 0 auto; position: relative; z-index: 1; }
+#seekHud .hudIcon svg { width: 22px; height: 22px; }
+#seekHud .hudText { position: relative; z-index: 1; min-width: 0; }
+#seekHud .hudText b { display: block; font-size: 14px; font-weight: 600; }
+#seekHud .hudText s { display: block; text-decoration: none; font-size: 12px; color: rgba(255,255,255,.7); margin-top: 1px; }
+#speedHud { width: 94px; padding: 4px 8px; gap: 6px; border-radius: 18px; }
+#speedHud .hudIcon { width: 22px; height: 22px; border-radius: 12px; background: rgba(0,174,236,.22);
+  display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+#speedHud .hudIcon svg { width: 15px; height: 15px; }
+#speedHud .hudText { font-size: 13px; font-weight: 700; }
+
+.menu { position: fixed; z-index: 40; min-width: 170px; background: #202429; border: 1px solid #2e343c;
+  border-radius: 12px; padding: 6px; box-shadow: 0 18px 40px rgba(0,0,0,.5); animation: menuIn .12s ease-out; }
+@keyframes menuIn { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: none; } }
+.menuItem { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 12px; border-radius: 8px;
+  font-size: 14px; color: #e6ebf1; text-align: left; }
+.menuItem:hover { background: rgba(255,255,255,.1); }
+.menuItem .tick { margin-left: auto; color: #00AEEC; font-size: 13px; }
+.menuItem .arrow { margin-left: auto; color: #8b95a3; }
+.menuTitle { padding: 8px 10px 6px; font-size: 12px; color: #8b95a3; }
+
+#overlay { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55); display: flex;
+  align-items: flex-end; justify-content: center; }
+@media (min-width: 720px) { #overlay { align-items: center; } }
+.sheet { width: 100%; max-width: 620px; max-height: 86vh; background: #1b1f24; border: 1px solid #2b323b;
+  border-radius: 20px 20px 0 0; display: flex; flex-direction: column; overflow: hidden;
+  animation: sheetUp .22s ease-out; }
+@media (min-width: 720px) { .sheet { border-radius: 20px; } }
+@keyframes sheetUp { from { transform: translateY(24px); opacity: .6; } to { transform: none; opacity: 1; } }
+.sheetHead { display: flex; align-items: center; gap: 10px; padding: 16px 18px 10px; }
+.sheetHead h3 { margin: 0; font-size: 17px; font-weight: 700; flex: 1; }
+.sheetHead .sub { font-size: 12px; color: #8b95a3; font-weight: 400; margin-top: 3px; }
+.tabs { display: flex; gap: 6px; padding: 4px 18px 0; }
+.tab { flex: 1; text-align: center; padding: 9px 0; border-radius: 10px; font-size: 14px; color: #9aa4b2; }
+.tab.active { background: #2a313a; color: #fff; font-weight: 600; }
+.sheetBody { padding: 14px 18px 20px; overflow: auto; }
+.section { margin-bottom: 18px; }
+.section > h4 { margin: 0 0 6px; font-size: 13px; color: #00AEEC; font-weight: 600; }
+.row { display: flex; align-items: center; gap: 10px; padding: 9px 0; }
+.row .lead { width: 22px; height: 22px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; color: #b9c3ce; }
+.row .lead svg { width: 18px; height: 18px; }
+.row .label { flex: 0 0 auto; font-size: 14px; }
+.row .desc { font-size: 12px; color: #8b95a3; }
+.row .val { margin-left: auto; font-size: 13px; color: #cfd7e0; font-variant-numeric: tabular-nums; }
+.row input[type=range] { flex: 1; accent-color: #00AEEC; height: 24px; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; padding: 4px 0 10px; }
+.chip { padding: 7px 14px; border-radius: 18px; border: 1px solid #39424d; color: #c3ccd6; font-size: 13px; }
+.chip.on { background: rgba(0,174,236,.18); border-color: #00AEEC; color: #8fd8ff; }
+.switch { position: relative; width: 44px; height: 26px; flex: 0 0 auto; margin-left: auto; }
+.switch input { display: none; }
+.switch span { position: absolute; inset: 0; border-radius: 13px; background: #3a424c; transition: background .18s; }
+.switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%;
+  background: #cfd7e0; transition: transform .18s, background .18s; }
+.switch input:checked + span { background: rgba(0,174,236,.55); }
+.switch input:checked + span::after { transform: translateX(18px); background: #00AEEC; }
+.selList { display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow: auto; }
+.selItem { padding: 11px 12px; border-radius: 10px; background: #222830; font-size: 14px; text-align: left; }
+.selItem:hover { background: #2a323c; }
+.selItem small { display: block; color: #8b95a3; font-size: 12px; margin-top: 3px; }
+.searchRow { display: flex; gap: 8px; margin-bottom: 12px; }
+.searchRow input { flex: 1; background: #232a32; border: 1px solid #303844; border-radius: 10px;
+  padding: 10px 12px; color: #fff; outline: none; font-size: 14px; }
+.searchRow button { background: #00AEEC; color: #001018; border-radius: 10px; padding: 0 16px; font-weight: 600; }
+.shieldTag { display: inline-flex; align-items: center; gap: 6px; background: #262d36; border: 1px solid #333b46;
+  border-radius: 8px; padding: 6px 10px; font-size: 13px; margin: 0 6px 6px 0; }
+.shieldTag b { font-weight: 500; }
+.shieldTag i { font-style: normal; color: #ff8a8a; cursor: pointer; }
+.epPanel { position: fixed; top: 0; right: 0; bottom: 0; width: 320px; max-width: 86vw; z-index: 30;
+  background: #171b20; border-left: 1px solid #2b323b; padding: 16px; overflow: auto;
+  animation: epIn .2s ease-out; }
+@keyframes epIn { from { transform: translateX(100%); } to { transform: none; } }
+.epPanel h3 { margin: 0 0 12px; font-size: 16px; }
+.epItem { display: block; width: 100%; text-align: left; padding: 10px 12px; border-radius: 10px;
+  font-size: 14px; color: #d3dbe4; margin-bottom: 6px; }
+.epItem:hover { background: #222a33; }
+.epItem.on { background: rgba(0,174,236,.16); color: #8fd8ff; }
+.toast { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 80;
+  background: rgba(0,0,0,.82); color: #fff; font-size: 14px; padding: 10px 18px; border-radius: 22px;
+  max-width: 80vw; text-align: center; animation: hudIn .18s ease-out; }
+</style>
+</head>
+<body>
+
+<div id="entry">
+  <div class="entryCard">
+    <div class="entryHead">
+      <div class="entryLogo">K</div>
+      <div class="entryTitle">Kazumi 网页播放器</div>
+    </div>
+    <div class="entrySub">粘贴视频链接即可播放，支持 mp4 / m3u8 直链。每行一条链接即为一集，可挂载弹弹play 弹幕。</div>
+    <div class="field">
+      <label>标题</label>
+      <input class="textInput" id="entryTitle" placeholder="留空则自动取链接文件名">
+    </div>
+    <div class="field">
+      <label>视频链接（每行一集）</label>
+      <textarea class="areaInput" id="entryLinks" placeholder="https://example.com/ep1.m3u8&#10;https://example.com/ep2.m3u8"></textarea>
+    </div>
+    <div class="entryRow">
+      <div class="field">
+        <label>Referer（可选）</label>
+        <input class="textInput" id="entryReferer" placeholder="部分资源需要来源页">
+      </div>
+    </div>
+    <div class="entryActions">
+      <button class="btnPrimary" id="btnPlay">开始播放</button>
+      <button class="btnGhost" id="btnPipEntry">以画中画打开</button>
+    </div>
+    <div class="historyList" id="historyList"></div>
+  </div>
+</div>
+
+<div id="player" class="hidden panelHidden">
+  <div id="stage">
+    <video id="video" playsinline preload="metadata" crossorigin="anonymous"></video>
+  </div>
+  <canvas id="danmaku"></canvas>
+  <div id="spinner" class="hidden"></div>
+
+  <div id="hudLayer">
+    <div class="hud" id="seekHud">
+      <div class="hudBg"></div>
+      <div class="hudIcon" id="seekIcon"></div>
+      <div class="hudText"><b id="seekMain">00:00</b><s id="seekSub">00:00 / 00:00</s></div>
+    </div>
+    <div class="hud" id="speedHud">
+      <div class="hudIcon" id="speedIcon"></div>
+      <div class="hudText" id="speedText">2.0x</div>
+    </div>
+    <div class="hud" id="adjustHud">
+      <div class="hudIcon" id="adjustIcon"></div>
+      <div class="hudBar"><i id="adjustFill"></i><div class="hudSep" id="adjustSep"></div></div>
+    </div>
+  </div>
+
+  <div class="scrim" id="scrimTop"></div>
+  <div class="scrim" id="scrimBottom"></div>
+
+  <div id="topBar"></div>
+
+  <div id="rightControls">
+    <button class="iconBtn" id="btnShot" title="截图"></button>
+    <button class="iconBtn" id="btnLock" title="锁定面板"></button>
+  </div>
+
+  <div id="bottomBar">
+    <div id="transport">
+      <div id="aboveTime"></div>
+      <div id="progressRow">
+        <div id="progress">
+          <div class="track"></div>
+          <div class="buffer"></div>
+          <div class="played"></div>
+          <div class="thumb"></div>
+          <div class="tlabel left"></div>
+          <div class="tlabel right"></div>
+        </div>
+      </div>
+      <div id="controlRow"></div>
+    </div>
+  </div>
+</div>
+
+<div id="overlayHost"></div>
+<div id="menuHost"></div>
+<div id="toastHost"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var ACCENT = "#00AEEC";
+  var MOBILE = window.matchMedia("(max-width: 600px)").matches;
+
+  var ICONS = {
+    back: '<path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>',
+    pip: '<path fill="currentColor" d="M19 11h-8v6h8v-6zm4 8V4.98C23 3.88 22.1 3 21 3H3c-1.1 0-2 .88-2 1.98V19c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2zm-2 .02H3V4.97h18v14.05z"/>',
+    heart: '<path fill="currentColor" d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm3.5 5.5c0 2.89-3.14 5.74-7.9 10.05l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5z"/>',
+    heartFull: '<path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>',
+    more: '<path fill="currentColor" d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/>',
+    play: '<path fill="currentColor" d="M8 5v14l11-7z"/>',
+    pause: '<path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>',
+    next: '<path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>',
+    fullscreen: '<path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>',
+    fullscreenExit: '<path fill="currentColor" d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>',
+    aspect: '<path fill="currentColor" d="M19 12h-2v3h-3v2h5v-5zM7 9h3V7H5v5h2V9zm14-6H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16.01H3V4.99h18v14.02z"/>',
+    menuOpen: '<path fill="currentColor" d="M3 18h13v-2H3v2zm0-5h10v-2H3v2zm0-7v2h13V6H3zm18 9.59L17.42 12 21 8.41 19.59 7l-5 5 5 5L21 15.59z"/>',
+    lock: '<path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/>',
+    unlock: '<path fill="currentColor" d="M12 17c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm6-9h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h1.9c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10z"/>',
+    camera: '<path fill="currentColor" d="M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/>',
+    close: '<path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>',
+    search: '<path fill="currentColor" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>',
+    speed: '<path fill="currentColor" d="M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z"/>',
+    volume: '<path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>',
+    brightness: '<path fill="currentColor" d="M20 8.69V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12 20 8.69zM12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6 6 2.69 6 6-2.69 6-6 6zm0-10c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4z"/>',
+    add: '<path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>',
+    remove: '<path fill="currentColor" d="M19 13H5v-2h14v2z"/>',
+    translate: '<path fill="currentColor" d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/>',
+    sync: '<path fill="currentColor" d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>',
+    filter: '<path fill="currentColor" d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/>',
+    info: '<path fill="currentColor" d="M11 7h2v2h-2V7zm0 4h2v6h-2v-6zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/>',
+    timer: '<path fill="currentColor" d="M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61l1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42A8.962 8.962 0 0 0 12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9 9-4.03 9-9c0-2.12-.74-4.07-1.97-5.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/>',
+    link: '<path fill="currentColor" d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/>',
+    forward: '<path fill="currentColor" d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/>',
+    check: '<path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>'
+  };
+
+  var DANMAKU_ON = ['<path fill="#FFFFFF" fill-rule="evenodd" d="M11.989 4.828c-.47 0-.975.004-1.515.012l-1.71-2.566a1.008 1.008 0 0 0-1.678 1.118l.999 1.5c-.681.018-1.403.04-2.164.068a4.013 4.013 0 0 0-3.83 3.44c-.165 1.15-.245 2.545-.245 4.185 0 1.965.115 3.67.35 5.116a4.012 4.012 0 0 0 3.763 3.363l.906.046c1.205.063 1.808.095 3.607.095a.988.988 0 0 0 0-1.975c-1.758 0-2.339-.03-3.501-.092l-.915-.047a2.037 2.037 0 0 1-1.91-1.708c-.216-1.324-.325-2.924-.325-4.798 0-1.563.076-2.864.225-3.904.14-.977.96-1.713 1.945-1.747 2.444-.087 4.465-.13 6.063-.131 1.598 0 3.62.044 6.064.13.96.034 1.71.81 1.855 1.814.075.524.113 1.962.141 3.065v.002c.01.342.017.65.025.88a.987.987 0 1 0 1.974-.068c-.008-.226-.016-.523-.025-.856v-.027c-.03-1.118-.073-2.663-.16-3.276-.273-1.906-1.783-3.438-3.74-3.507-.9-.032-1.743-.058-2.531-.078l1.05-1.46a1.008 1.008 0 0 0-1.638-1.177l-1.862 2.59c-.38-.004-.744-.007-1.088-.007h-.13Zm.521 4.775h-1.32v4.631h2.222v.847h-2.618v1.078h2.618l.003.678c.36.026.714.163 1.01.407h.11v-1.085h2.694v-1.078h-2.695v-.847H16.8v-4.63h-1.276a8.59 8.59 0 0 0 .748-1.42L15.183 7.8a14.232 14.232 0 0 1-.814 1.804h-1.518l.693-.308a8.862 8.862 0 0 0-.814-1.408l-1.045.352c.297.396.572.847.825 1.364Zm-4.18 3.564.154-1.485h1.98V8.294h-3.2v.98H9.33v1.43H7.472l-.308 3.453h2.277c0 1.166-.044 1.925-.12 2.277-.078.352-.386.528-.936.528-.308 0-.616-.022-.902-.055l.297 1.067.062.005c.285.02.551.04.818.04 1.001-.067 1.562-.419 1.694-1.057.11-.638.176-1.903.176-3.795h-2.2Zm7.458.11v-.858h-1.254v.858h1.254Zm-2.376-.858v.858h-1.199v-.858h1.2Zm-1.199-.946h1.2v-.902h-1.2v.902Zm2.321 0v-.902h1.254v.902h-1.254Z" clip-rule="evenodd"/>', '<path fill="ACCENT" fill-rule="evenodd" d="M22.846 14.627a1 1 0 0 0-1.412.075l-5.091 5.703-2.216-2.275-.097-.086-.008-.005a1 1 0 0 0-1.322 1.493l2.963 3.041.093.083.007.005a1 1 0 0 0 1.354-.124l5.81-6.505.08-.102.005-.008a1 1 0 0 0-.166-1.295Z" clip-rule="evenodd"/>'];
+  var DANMAKU_OFF = '<path fill="#FFFFFF" fill-rule="evenodd" d="m8.085 4.891-.999-1.499a1.008 1.008 0 0 1 1.679-1.118l1.709 2.566c.54-.008 1.045-.012 1.515-.012h.13c.345 0 .707.003 1.088.007l1.862-2.59a1.008 1.008 0 0 1 1.637 1.177l-1.049 1.46c.788.02 1.631.046 2.53.078 1.958.069 3.468 1.6 3.74 3.507.088.613.13 2.158.16 3.276l.001.027c.01.333.017.63.025.856a.987.987 0 0 1-1.974.069c-.008-.23-.016-.539-.025-.881v-.002c-.028-1.103-.066-2.541-.142-3.065-.143-1.004-.895-1.78-1.854-1.813a179.14 179.14 0 0 0-6.064-.131c-1.598 0-3.619.044-6.063.13a2.037 2.037 0 0 0-1.945 1.748c-.15 1.04-.225 2.341-.225 3.904 0 1.874.11 3.474.325 4.798.154.949.95 1.66 1.91 1.708a97.58 97.58 0 0 0 5.416.139.988.988 0 0 1 0 1.975 99.78 99.78 0 0 1-5.513-.141A4.012 4.012 0 0 1 2.197 17.7c-.236-1.446-.351-3.151-.351-5.116 0-1.64.08-3.035.245-4.184A4.013 4.013 0 0 1 5.92 4.96c.761-.027 1.483-.05 2.164-.069Zm4.436 4.707h-1.32v4.63h2.222v.848h-2.618v1.078h2.431a5.01 5.01 0 0 1 3.575-3.115V9.598h-1.276a8.59 8.59 0 0 0 .748-1.42l-1.089-.384a14.232 14.232 0 0 1-.814 1.804h-1.518l.693-.308a8.862 8.862 0 0 0-.814-1.408l-1.045.352c.297.396.572.847.825 1.364Zm-4.18 3.564.154-1.485h1.98V8.289h-3.2v.979h2.067v1.43H7.483l-.308 3.454h2.277c0 1.166-.044 1.925-.12 2.277-.078.352-.386.528-.936.528-.308 0-.616-.022-.902-.055l.297 1.067.062.004c.285.02.551.04.818.04 1.001-.066 1.562-.418 1.694-1.056.11-.638.176-1.903.176-3.795h-2.2Zm7.458.11v-.858h-1.254v.858H15.8Zm-2.376-.858v.858h-1.199v-.858h1.2Zm-1.199-.946h1.2v-.902h-1.2v.902Zm2.321 0v-.902H15.8v.902h-1.254Zm3.517 10.594a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-.002-1.502a2.5 2.5 0 0 1-2.217-3.657l3.326 3.398a2.49 2.49 0 0 1-1.109.259Zm2.5-2.5c0 .42-.103.815-.286 1.162l-3.328-3.401a2.5 2.5 0 0 1 3.614 2.239Z" clip-rule="evenodd"/>';
+  var DANMAKU_SETTING = '<path fill="#FFFFFF" fill-rule="evenodd" d="m15.645 4.881 1.06-1.473a.998.998 0 1 0-1.622-1.166L13.22 4.835a110.67 110.67 0 0 0-1.1-.007h-.131c-.47 0-.975.004-1.515.012L8.783 2.3A.998.998 0 0 0 7.12 3.408l.988 1.484c-.688.019-1.418.042-2.188.069a4.013 4.013 0 0 0-3.83 3.44c-.165 1.15-.245 2.545-.245 4.185 0 1.965.115 3.67.35 5.116a4.012 4.012 0 0 0 3.763 3.363 99.78 99.78 0 0 0 5.513.141.988.988 0 0 0 0-1.975 97.58 97.58 0 0 1-5.416-.139 2.037 2.037 0 0 1-1.91-1.708c-.216-1.324-.325-2.924-.325-4.798 0-1.563.076-2.864.225-3.904.14-.977.96-1.713 1.945-1.747 2.444-.087 4.465-.13 6.063-.131 1.598 0 3.62.044 6.064.13.96.034 1.71.81 1.855 1.814.075.524.113 1.962.141 3.065v.002c.005.183.01.07.014-.038.004-.096.008-.189.011-.081a.987.987 0 1 0 1.974-.069c-.004-.105-.007-.009-.011.09a2.175 2.175 0 0 1-.007.135l-.002.01a.574.574 0 0 1-.005-.091v-.027c-.03-1.118-.073-2.663-.16-3.276-.273-1.906-1.783-3.438-3.74-3.507-.905-.032-1.752-.058-2.543-.079Zm-3.113 4.703h-1.307v4.643h2.2v.04l.651-1.234c.113-.215.281-.389.482-.509v-.11h.235c.137-.049.283-.074.433-.074h1.553V9.584h-1.264a8.5 8.5 0 0 0 .741-1.405l-1.078-.381c-.24.631-.501 1.23-.806 1.786h-1.503l.686-.305a8.613 8.613 0 0 0-.806-1.394l-1.034.348c.294.392.566.839.817 1.35Zm-1.7 5.502h2.16l-.564 1.068h-1.595v-1.068Zm-2.498-1.863.152-1.561h1.96V8.289H7.277v.969h2.048v1.435h-1.84l-.306 3.51h2.254c0 1.155-.043 1.906-.12 2.255-.076.348-.38.523-.925.523-.305 0-.61-.022-.893-.055l.294 1.056.061.005c.282.02.546.039.81.039.991-.065 1.547-.414 1.677-1.046.11-.631.175-1.883.175-3.757H8.334Zm5.09-.8v.85h-1.188v-.85h1.187Zm-1.188-.955h1.187v-.893h-1.187v.893Zm2.322.007v-.893h1.241v.893h-1.241Zm.528 2.757a1.26 1.26 0 0 1 1.087-.627l4.003-.009a1.26 1.26 0 0 1 1.094.63l1.721 2.982c.226.39.225.872-.001 1.263l-1.743 3a1.26 1.26 0 0 1-1.086.628l-4.003.009a1.26 1.26 0 0 1-1.094-.63l-1.722-2.982a1.26 1.26 0 0 1 .002-1.263l1.742-3Zm1.967.858a1.26 1.26 0 0 0-1.08.614l-.903 1.513a1.26 1.26 0 0 0-.002 1.289l.885 1.492c.227.384.64.62 1.086.618l2.192-.005a1.26 1.26 0 0 0 1.08-.615l.904-1.518a1.26 1.26 0 0 0 .001-1.288l-.884-1.489a1.26 1.26 0 0 0-1.086-.616l-2.193.005Zm2.517 2.76a1.4 1.4 0 1 1-2.8 0 1.4 1.4 0 0 1 2.8 0Z" clip-rule="evenodd"/>';
+
+  function svg(inner, size) {
+    return '<svg viewBox="0 0 24 24" width="' + (size || 24) + '" height="' + (size || 24) + '">' + inner + '</svg>';
+  }
+  function icon(name) { return svg(ICONS[name]); }
+  function danmakuOnIcon() { return '<svg viewBox="0 0 24 24" width="24" height="24">' + DANMAKU_ON.join("").replace("ACCENT", ACCENT) + '</svg>'; }
+  function danmakuOffIcon() { return '<svg viewBox="0 0 24 24" width="24" height="24">' + DANMAKU_OFF + '</svg>'; }
+  function danmakuSettingIcon() { return '<svg viewBox="0 0 24 24" width="24" height="24">' + DANMAKU_SETTING + '</svg>'; }
+  function forwardIcon() {
+    return '<svg viewBox="0 0 40 24" width="40" height="24"><path fill="#fff" d="M4 4v16l13-8L4 4zm14 0v16l13-8-13-8z"/><text x="14" y="17" font-size="13" font-weight="700" fill="#fff" text-anchor="middle">80</text></svg>';
+  }
+
+  function $(s, r) { return (r || document).querySelector(s); }
+  function el(tag, cls, html) {
+    var d = document.createElement(tag);
+    if (cls) d.className = cls;
+    if (html !== undefined) d.innerHTML = html;
+    return d;
+  }
+  function fmt(sec) {
+    if (!isFinite(sec) || sec < 0) sec = 0;
+    sec = Math.floor(sec);
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    function p(n) { return String(n).padStart(2, "0"); }
+    return h > 0 ? p(h) + ":" + p(m) + ":" + p(s) : p(m) + ":" + p(s);
+  }
+
+  var SETTINGS_KEY = "kazumi.web.settings";
+  var SHIELD_KEY = "kazumi.web.shield";
+  var HISTORY_KEY = "kazumi.web.history";
+  var FAV_KEY = "kazumi.web.fav";
+
+  var SETTINGS = {
+    danmakuFontSize: MOBILE ? 16 : 25,
+    danmakuOpacity: 1,
+    danmakuArea: 1,
+    danmakuLineHeight: 1.6,
+    danmakuDuration: 8,
+    danmakuFollowSpeed: true,
+    danmakuTop: true,
+    danmakuBottom: false,
+    danmakuScroll: true,
+    danmakuColor: true,
+    danmakuMassive: false,
+    danmakuDeduplication: false,
+    danmakuTimeOffset: 0,
+    danmakuFontWeight: 4,
+    danmakuBorder: true,
+    danmakuBorderSize: 1.5,
+    danmakuChConvert: 0,
+    danmakuBiliBiliSource: true,
+    danmakuGamerSource: true,
+    danmakuEnabledByDefault: false,
+    brightnessVolumeGesture: true,
+    autoPlayNext: true,
+    buttonSkipTime: 80,
+    arrowKeySkipTime: 10,
+    defaultShortcutForwardPlaySpeed: 2,
+    panelHideTime: 4000,
+    superResolution: 0,
+    aspectRatio: 1
+  };
+
+  try {
+    var saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+    Object.keys(saved).forEach(function (k) { if (k in SETTINGS) SETTINGS[k] = saved[k]; });
+  } catch (e) {}
+
+  function saveSettings() {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(SETTINGS)); } catch (e) {}
+  }
+
+  var SHIELD = [];
+  try { SHIELD = JSON.parse(localStorage.getItem(SHIELD_KEY) || "[]"); } catch (e) {}
+  function saveShield() { try { localStorage.setItem(SHIELD_KEY, JSON.stringify(SHIELD)); } catch (e) {} }
+
+  var FAVS = {};
+  try { FAVS = JSON.parse(localStorage.getItem(FAV_KEY) || "{}"); } catch (e) {}
+  function saveFavs() { try { localStorage.setItem(FAV_KEY, JSON.stringify(FAVS)); } catch (e) {} }
+
+  function readHistory() {
+    try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"); } catch (e) { return []; }
+  }
+  function pushHistory(item) {
+    var list = readHistory().filter(function (x) { return x.title !== item.title; });
+    list.unshift(item);
+    list = list.slice(0, 8);
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list)); } catch (e) {}
+  }
+
+  function isBlocked(text) {
+    if (!text) return false;
+    for (var i = 0; i < SHIELD.length; i++) {
+      var rule = SHIELD[i];
+      if (!rule) continue;
+      if (rule.length > 1 && rule.charAt(0) === "/" && rule.charAt(rule.length - 1) === "/") {
+        try { if (new RegExp(rule.slice(1, -1)).test(text)) return true; } catch (e) {}
+      } else if (text.indexOf(rule) !== -1) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function DanmakuEngine(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.items = [];
+    this.scrollTracks = [];
+    this.topTracks = [];
+    this.bottomTracks = [];
+    this.option = {
+      fontSize: 25, opacity: 1, area: 1, lineHeight: 1.6, duration: 8,
+      strokeWidth: 1.5, fontWeight: 4, massiveMode: false,
+      hideTop: false, hideScroll: false, hideBottom: false, speedFactor: 1
+    };
+    this.W = 0; this.H = 0; this.dpr = 1; this.rows = 1;
+    this.last = 0;
+    var self = this;
+    this.resize();
+    window.addEventListener("resize", function () { self.resize(); });
+    requestAnimationFrame(function (t) { self.last = t; self.loop(t); });
+  }
+  DanmakuEngine.prototype.resize = function () {
+    var rect = this.canvas.getBoundingClientRect();
+    this.dpr = window.devicePixelRatio || 1;
+    this.W = Math.max(1, rect.width);
+    this.H = Math.max(1, rect.height);
+    this.canvas.width = Math.floor(this.W * this.dpr);
+    this.canvas.height = Math.floor(this.H * this.dpr);
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    this.rows = Math.max(1, Math.floor(this.H * this.option.area / (this.option.fontSize * this.option.lineHeight)));
+  };
+  DanmakuEngine.prototype.setOption = function (patch) {
+    Object.keys(patch).forEach(function (k) { this.option[k] = patch[k]; }, this);
+    this.rows = Math.max(1, Math.floor(this.H * this.option.area / (this.option.fontSize * this.option.lineHeight)));
+  };
+  DanmakuEngine.prototype.clear = function () {
+    this.items = [];
+    this.scrollTracks = [];
+    this.topTracks = [];
+    this.bottomTracks = [];
+  };
+  DanmakuEngine.prototype.lineHeight = function () {
+    return this.option.fontSize * this.option.lineHeight;
+  };
+  DanmakuEngine.prototype.allocScroll = function (w) {
+    var now = performance.now();
+    var D = this.option.duration * 1000;
+    var speed = (this.W + w) / (D / 1000);
+    for (var i = 0; i < this.rows; i++) {
+      var t = this.scrollTracks[i];
+      if (!t) { this.scrollTracks[i] = { w: w, speed: speed, t0: now }; return i; }
+      var dt = (now - t.t0) / 1000;
+      if (dt >= D / 1000) { this.scrollTracks[i] = { w: w, speed: speed, t0: now }; return i; }
+      if (this.option.massiveMode) continue;
+      var entered = dt >= (t.w / t.speed);
+      if (entered && speed * (D / 1000 - dt) <= t.speed * (D / 1000)) {
+        this.scrollTracks[i] = { w: w, speed: speed, t0: now };
+        return i;
+      }
+    }
+    if (this.option.massiveMode) {
+      var idx = Math.floor(Math.random() * this.rows);
+      return idx;
+    }
+    return -1;
+  };
+  DanmakuEngine.prototype.allocFixed = function (bucket) {
+    var now = performance.now();
+    var D = this.option.duration * 1000;
+    for (var i = 0; i < this.rows; i++) {
+      var t = bucket[i];
+      if (!t || now - t >= D) { bucket[i] = now; return i; }
+    }
+    if (this.option.massiveMode) return Math.floor(Math.random() * this.rows);
+    return -1;
+  };
+  DanmakuEngine.prototype.add = function (text, color, type) {
+    if (text === undefined || text === null) return;
+    text = String(text);
+    if (isBlocked(text)) return;
+    var opt = this.option;
+    var isScroll = type !== 4 && type !== 5;
+    if (isScroll && opt.hideScroll) return;
+    if (type === 5 && opt.hideTop) return;
+    if (type === 4 && opt.hideBottom) return;
+    var lh = this.lineHeight();
+    this.ctx.font = this.font();
+    var w = this.ctx.measureText(text).width;
+    var track, y;
+    if (isScroll) {
+      track = this.allocScroll(w);
+      if (track < 0) return;
+      y = track * lh;
+    } else if (type === 5) {
+      track = this.allocFixed(this.topTracks);
+      if (track < 0) return;
+      y = track * lh;
+    } else {
+      track = this.allocFixed(this.bottomTracks);
+      if (track < 0) return;
+      y = this.H - (track + 1) * lh;
+    }
+    this.items.push({
+      text: text, color: color || "#fff", type: type || 1, w: w,
+      x: isScroll ? this.W : (this.W - w) / 2,
+      y: y, t0: performance.now(),
+      dur: opt.duration * (isScroll ? 1 : 1) * 1000
+    });
+  };
+  DanmakuEngine.prototype.font = function () {
+    var weight = Math.max(1, Math.min(9, this.option.fontWeight || 4)) * 100;
+    return weight + " " + this.option.fontSize + 'px "MiSans","PingFang SC","Microsoft YaHei",system-ui,sans-serif';
+  };
+  DanmakuEngine.prototype.loop = function (ts) {
+    var self = this;
+    requestAnimationFrame(function (t) { self.loop(t); });
+    this.last = ts;
+    var ctx = this.ctx;
+    if (this.W <= 0) this.resize();
+    ctx.clearRect(0, 0, this.W, this.H);
+    var opt = this.option;
+    ctx.globalAlpha = opt.opacity;
+    ctx.font = this.font();
+    ctx.textBaseline = "top";
+    var now = performance.now();
+    var alive = [];
+    for (var i = 0; i < this.items.length; i++) {
+      var it = this.items[i];
+      var p = (now - it.t0) / it.dur;
+      if (p >= 1) continue;
+      var x;
+      if (it.type === 4 || it.type === 5) {
+        x = it.x;
+      } else {
+        x = this.W - (this.W + it.w) * p;
+      }
+      it.dx = x;
+      if (opt.strokeWidth > 0) {
+        ctx.lineWidth = opt.strokeWidth;
+        ctx.strokeStyle = "#000";
+        ctx.strokeText(it.text, x, it.y);
+      }
+      ctx.fillStyle = it.color;
+      ctx.fillText(it.text, x, it.y);
+      alive.push(it);
+    }
+    this.items = alive;
+    ctx.globalAlpha = 1;
+  };
+
+  var E = {};
+  ["video", "player", "stage", "danmaku", "spinner", "topBar", "bottomBar", "controlRow",
+    "progressRow", "progress", "aboveTime", "timeLabel", "hudLayer", "seekHud", "seekIcon",
+    "seekMain", "seekSub", "speedHud", "speedText", "adjustHud", "adjustIcon", "adjustFill",
+    "adjustSep", "rightControls", "btnShot", "btnLock", "entry", "entryTitle", "entryLinks",
+    "entryReferer", "btnPlay", "historyList", "scrimTop", "scrimBottom"].forEach(function (id) {
+      E[id] = document.getElementById(id);
+    });
+  E.player.classList.add("panelHidden");
+
+  var engine = null;
+  var hls = null;
+  var state = {
+    episodes: [],
+    index: 0,
+    title: "",
+    referer: "",
+    url: "",
+    panelVisible: false,
+    hideTimer: null,
+    locked: false,
+    brightness: 1,
+    volume: 1,
+    speed: 1,
+    lastSpeed: 1,
+    seekDragging: false,
+    seeking: false,
+    seekDirection: 0,
+    seekTarget: 0,
+    seekCancelPending: false,
+    emitted: {},
+    lastSecond: -1,
+    danmaku: {
+      on: false, loading: false, map: {}, count: 0,
+      animeTitle: "", animeId: 0, bangumiId: 0, episodeId: 0, episodeTitle: "",
+      sources: {}
+    },
+    timers: { shutdown: null },
+    lastSrc: null,
+    volumeGestureActive: false,
+    brightnessGestureActive: false,
+    adjustTimer: null,
+    hideCursorTimer: null
+  };
+
+  function toast(msg) {
+    var host = document.getElementById("toastHost");
+    host.innerHTML = "";
+    var t = el("div", "toast", msg);
+    host.appendChild(t);
+    setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 2200);
+  }
+
+  function menuHost() { return document.getElementById("menuHost"); }
+  function closeMenus() { menuHost().innerHTML = ""; }
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest(".menu") && !e.target.closest("[data-menu-anchor]")) closeMenus();
+  }, true);
+
+  function showMenu(anchor, items) {
+    closeMenus();
+    var m = el("div", "menu");
+    items.forEach(function (item) {
+      if (item.title) { m.appendChild(el("div", "menuTitle", item.title)); return; }
+      var b = el("button", "menuItem");
+      b.innerHTML = '<span>' + item.label + '</span>' +
+        (item.selected ? '<span class="tick">' + icon("check") + '</span>' : "") +
+        (item.submenu ? '<span class="arrow">›</span>' : "");
+      b.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        if (item.submenu) { showMenu(anchor, item.submenu()); return; }
+        closeMenus();
+        item.onSelect();
+      });
+      m.appendChild(b);
+    });
+    menuHost().appendChild(m);
+    var r = anchor.getBoundingClientRect();
+    var mw = m.offsetWidth, mh = m.offsetHeight;
+    var left = Math.min(Math.max(8, r.right - mw), window.innerWidth - mw - 8);
+    var top = r.bottom + 6;
+    if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+    m.style.left = left + "px";
+    m.style.top = top + "px";
+  }
+
+  function openSheet(opts) {
+    closeMenus();
+    var host = document.getElementById("overlayHost");
+    host.innerHTML = "";
+    var ov = el("div", "overlay");
+    ov.id = "overlay";
+    var sheet = el("div", "sheet");
+    var head = el("div", "sheetHead");
+    var h = el("h3", "", opts.title + (opts.subtitle ? '<div class="sub">' + opts.subtitle + "</div>" : ""));
+    head.appendChild(h);
+    var close = el("button", "iconBtn");
+    close.innerHTML = icon("close");
+    close.addEventListener("click", closeSheet);
+    head.appendChild(close);
+    sheet.appendChild(head);
+    var body = el("div", "sheetBody");
+    if (opts.tabs) {
+      var tabs = el("div", "tabs");
+      opts.tabs.forEach(function (t, i) {
+        var tb = el("button", "tab" + (i === 0 ? " active" : ""), t.label);
+        tb.addEventListener("click", function () {
+          Array.prototype.forEach.call(tabs.children, function (c) { c.classList.remove("active"); });
+          tb.classList.add("active");
+          renderTab(i);
+        });
+        tabs.appendChild(tb);
+      });
+      sheet.appendChild(tabs);
+      var renderTab = function (i) {
+        body.innerHTML = "";
+        opts.tabs[i].render(body);
+      };
+      sheet.appendChild(body);
+      renderTab(0);
+    } else {
+      if (opts.render) opts.render(body);
+      sheet.appendChild(body);
+    }
+    ov.appendChild(sheet);
+    ov.addEventListener("click", function (e) { if (e.target === ov) closeSheet(); });
+    host.appendChild(ov);
+    function closeSheet() { host.innerHTML = ""; }
+    return closeSheet;
+  }
+  function closeSheet() { document.getElementById("overlayHost").innerHTML = ""; }
+
+  function sliderRow(parent, opts) {
+    var row = el("div", "row");
+    row.innerHTML = '<div class="label">' + opts.label + "</div>";
+    var input = el("input");
+    input.type = "range";
+    input.min = opts.min; input.max = opts.max;
+    input.step = opts.step || 1;
+    input.value = opts.value;
+    var val = el("div", "val", opts.format(opts.value));
+    input.addEventListener("input", function () {
+      var v = parseFloat(input.value);
+      val.textContent = opts.format(v);
+      opts.onChange(v);
+    });
+    row.appendChild(input);
+    row.appendChild(val);
+    parent.appendChild(row);
+    return input;
+  }
+  function switchRow(parent, opts) {
+    var row = el("div", "row");
+    row.innerHTML = '<div class="lead">' + icon(opts.icon) + '</div><div><div class="label">' + opts.label +
+      "</div>" + (opts.desc ? '<div class="desc">' + opts.desc + "</div>" : "") + "</div>";
+    var sw = el("label", "switch");
+    var cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = !!opts.value;
+    sw.appendChild(cb);
+    sw.appendChild(el("span"));
+    cb.addEventListener("change", function () { opts.onChange(cb.checked); });
+    row.appendChild(sw);
+    parent.appendChild(row);
+    return cb;
+  }
+
+  function api(path) { return fetch(path).then(function (r) { return r.json(); }); }
+
+  function dandanSearch(keyword) {
+    return api("/api/dandan/search?anime=" + encodeURIComponent(keyword));
+  }
+  function dandanBangumi(id) { return api("/api/dandan/bangumi/" + id); }
+  function dandanComment(episodeId, chConvert) {
+    return api("/api/dandan/comment/" + episodeId + "?chConvert=" + (chConvert || 0) + "&withRelated=true");
+  }
+
+  function normalizeText(text) {
+    var s = text.trim().toLowerCase();
+    var out = "";
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      if (c === 0x3000) out += " ";
+      else if (c >= 0xff01 && c <= 0xff5e) out += String.fromCharCode(c - 0xfee0);
+      else out += s.charAt(i);
+    }
+    out = out.replace(/\s+/g, "");
+    out = out.replace(/[^\w\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\u31f0-\u31ff\uff65-\uff9f]/g, "");
+    out = out.replace(/(.)\1{2,}/g, "$1$1$1");
+    return out;
+  }
+
+  function mergeDuplicate(list, windowSeconds) {
+    var groups = {};
+    var order = [];
+    list.forEach(function (d) {
+      var key = normalizeText(d.message);
+      if (!groups[key]) { groups[key] = []; order.push(key); }
+      groups[key].push(d);
+    });
+    var result = [];
+    order.forEach(function (key) {
+      var arr = groups[key];
+      if (!arr.length) return;
+      if (arr.length === 1) { result.push(arr[0]); return; }
+      arr.sort(function (a, b) { return a.time - b.time; });
+      var cur = [];
+      arr.forEach(function (item) {
+        if (!cur.length) { cur.push(item); return; }
+        if (item.time - cur[cur.length - 1].time <= windowSeconds) cur.push(item);
+        else { flush(cur); cur = [item]; }
+      });
+      flush(cur);
+      function flush(g) {
+        if (!g.length) return;
+        if (g.length === 1) { result.push(g[0]); return; }
+        result.push({ message: g[0].message + " x" + g.length, time: g[0].time, type: 1, color: "#ffffff", source: g[0].source });
+      }
+    });
+    return result;
+  }
+
+  function sourceEnabled(d) {
+    var s = d.source || "";
+    var isBili = s.indexOf("BiliBili") !== -1;
+    var isGamer = s.indexOf("Gamer") !== -1;
+    if (!SETTINGS.danmakuBiliBiliSource && isBili) return false;
+    if (!SETTINGS.danmakuGamerSource && isGamer) return false;
+    return true;
+  }
+
+  function setDanmakuData(entries) {
+    var list = SETTINGS.danmakuDeduplication ? mergeDuplicate(entries, 5) : entries;
+    var map = {};
+    list = list.slice().sort(function (a, b) { return a.time - b.time; });
+    list.forEach(function (d) {
+      if (!sourceEnabled(d)) return;
+      var sec = Math.floor(d.time);
+      (map[sec] = map[sec] || []).push(d);
+    });
+    state.danmaku.map = map;
+    state.danmaku.count = list.length;
+    state.emitted = {};
+    state.lastSecond = -1;
+  }
+
+  function clearDanmaku() {
+    state.danmaku.map = {};
+    state.danmaku.count = 0;
+    state.emitted = {};
+    state.lastSecond = -1;
+    if (engine) engine.clear();
+  }
+
+  function applyEngineOptions() {
+    if (!engine) return;
+    var rate = E.video.playbackRate || 1;
+    var dur = SETTINGS.danmakuDuration;
+    if (SETTINGS.danmakuFollowSpeed && rate > 0) dur = dur / rate;
+    engine.setOption({
+      fontSize: SETTINGS.danmakuFontSize,
+      opacity: SETTINGS.danmakuOpacity,
+      area: SETTINGS.danmakuArea,
+      lineHeight: SETTINGS.danmakuLineHeight,
+      duration: dur,
+      strokeWidth: SETTINGS.danmakuBorder ? SETTINGS.danmakuBorderSize : 0,
+      fontWeight: SETTINGS.danmakuFontWeight,
+      massiveMode: SETTINGS.danmakuMassive,
+      hideTop: !SETTINGS.danmakuTop,
+      hideBottom: !SETTINGS.danmakuBottom,
+      hideScroll: !SETTINGS.danmakuScroll
+    });
+  }
+
+  function emitForSecond(sec) {
+    if (state.emitted[sec]) return;
+    state.emitted[sec] = true;
+    var list = state.danmaku.map[sec];
+    if (!list || !list.length) return;
+    var total = list.length;
+    for (var i = 0; i < total; i++) {
+      (function (d, delay) {
+        setTimeout(function () {
+          if (!state.danmaku.on || E.video.paused) return;
+          var color = SETTINGS.danmakuColor ? d.color : "#ffffff";
+          engine.add(d.message, color, d.type);
+        }, delay);
+      })(list[i], Math.floor(i * 1000 / total));
+    }
+  }
+
+  function danmakuTick() {
+    requestAnimationFrame(danmakuTick);
+    if (!engine) return;
+    if (!state.danmaku.on || E.video.paused || !E.video.duration) return;
+    var offset = SETTINGS.danmakuTimeOffset || 0;
+    var sec = Math.floor(E.video.currentTime - offset);
+    if (sec < 0) return;
+    if (sec !== state.lastSecond) {
+      if (sec === state.lastSecond + 1 || state.lastSecond === -1) {
+        emitForSecond(sec);
+      } else {
+        emitForSecond(sec);
+      }
+      state.lastSecond = sec;
+    }
+  }
+  requestAnimationFrame(danmakuTick);
+
+  function buildTopBar() {
+    E.topBar.innerHTML = "";
+    var back = el("button", "iconBtn");
+    back.innerHTML = icon("back");
+    back.title = "返回";
+    back.addEventListener("click", leavePlayer);
+    E.topBar.appendChild(back);
+
+    var title = el("div", "", "");
+    title.id = "titleText";
+    E.topBar.appendChild(title);
+
+    var fwd = el("button", "iconBtn");
+    fwd.dataset.menuAnchor = "1";
+    fwd.innerHTML = forwardIcon();
+    fwd.title = "快进" + SETTINGS.buttonSkipTime + "秒，长按修改时间";
+    fwd.addEventListener("click", function () { seekBy(SETTINGS.buttonSkipTime); });
+    var pressTimer = null;
+    fwd.addEventListener("pointerdown", function () {
+      pressTimer = setTimeout(function () { pressTimer = null; editSkipTime(); }, 600);
+    });
+    ["pointerup", "pointerleave", "pointercancel"].forEach(function (ev) {
+      fwd.addEventListener(ev, function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
+    });
+    E.topBar.appendChild(fwd);
+
+    var pip = el("button", "iconBtn");
+    pip.innerHTML = icon("pip");
+    pip.title = "画中画";
+    pip.addEventListener("click", togglePip);
+    E.topBar.appendChild(pip);
+
+    var fav = el("button", "iconBtn");
+    fav.title = "收藏";
+    fav.addEventListener("click", function () {
+      if (FAVS[state.title]) { delete FAVS[state.title]; fav.innerHTML = icon("heart"); toast("已取消收藏"); }
+      else { FAVS[state.title] = { episodes: state.episodes, referer: state.referer, time: Date.now() }; fav.innerHTML = icon("heartFull"); toast("已收藏"); }
+      saveFavs();
+    });
+    fav.innerHTML = FAVS[state.title] ? icon("heartFull") : icon("heart");
+    E.topBar.appendChild(fav);
+
+    var more = el("button", "iconBtn");
+    more.dataset.menuAnchor = "1";
+    more.innerHTML = icon("more");
+    more.title = "更多选项";
+    more.addEventListener("click", function (e) {
+      e.stopPropagation();
+      showMenu(more, moreItems());
+    });
+    E.topBar.appendChild(more);
+  }
+
+  function moreItems() {
+    return [
+      { label: "视频比例", submenu: function () { return aspectItems(); } },
+      { label: "倍速", submenu: function () { return speedItems(); } },
+      { label: "画质增强", submenu: function () { return superItems(); } },
+      { label: "一起看", onSelect: function () { toast("网页版暂不支持一起看"); } },
+      { label: "弹幕切换", onSelect: showDanmakuMatch },
+      { label: "弹幕设置", onSelect: showDanmakuSettings },
+      { label: "视频详情", onSelect: showVideoInfo },
+      { label: "远程投屏", onSelect: function () { toast("网页版暂不支持投屏"); } },
+      { label: "复制视频链接", onSelect: function () { copyText(state.url); } },
+      { label: "外部播放", onSelect: function () { window.open(state.url, "_blank"); } },
+      {
+        label: state.timers.shutdown ? "定时关闭 (已开启)" : "定时关闭",
+        submenu: function () {
+          return [
+            { label: "不开启", selected: !state.timers.shutdown, onSelect: cancelShutdown },
+            { label: "15 分钟", onSelect: function () { startShutdown(15); } },
+            { label: "30 分钟", onSelect: function () { startShutdown(30); } },
+            { label: "60 分钟", onSelect: function () { startShutdown(60); } }
+          ];
+        }
+      }
+    ];
+  }
+
+  function aspectItems() {
+    return [[1, "自动"], [2, "裁切填充"], [3, "拉伸填充"], [4, "4:3"]].map(function (a) {
+      return {
+        label: a[1], selected: SETTINGS.aspectRatio === a[0], onSelect: function () {
+          SETTINGS.aspectRatio = a[0]; saveSettings(); applyAspect(); updateCenterButtons();
+        }
+      };
+    });
+  }
+  function speedItems() {
+    return [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3].map(function (s) {
+      return { label: s + "x", selected: Math.abs(state.speed - s) < 0.001, onSelect: function () { setSpeed(s); } };
+    });
+  }
+  function superItems() {
+    return [[0, "关闭"], [1, "轻量锐化"], [2, "标准锐化"]].map(function (a) {
+      return {
+        label: a[1], selected: SETTINGS.superResolution === a[0], onSelect: function () {
+          SETTINGS.superResolution = a[0]; saveSettings(); applySuperResolution();
+        }
+      };
+    });
+  }
+
+  function applySuperResolution() {
+    var v = SETTINGS.superResolution;
+    E.video.style.filter = v === 0 ? "" : (v === 1 ? "contrast(1.04) saturate(1.05)" : "contrast(1.08) saturate(1.12) brightness(1.02)");
+  }
+
+  function applyAspect() {
+    var m = SETTINGS.aspectRatio;
+    E.stage.classList.toggle("r43", m === 4);
+    E.video.style.objectFit = m === 1 ? "contain" : (m === 2 ? "cover" : "fill");
+  }
+
+  function buildBottomBar() {
+    E.controlRow.innerHTML = "";
+    var play = el("button", "iconBtn");
+    play.id = "btnPlayPause";
+    play.addEventListener("click", togglePlay);
+    E.controlRow.appendChild(play);
+
+    var next = el("button", "iconBtn");
+    next.innerHTML = icon("next");
+    next.title = "下一集";
+    next.addEventListener("click", function () { switchEpisode(state.index + 1); });
+    E.controlRow.appendChild(next);
+
+    var time = el("div", "", "");
+    time.id = "timeLabel";
+    E.controlRow.appendChild(time);
+
+    var center = el("div", "", "");
+    center.id = "centerControls";
+    E.controlRow.appendChild(center);
+
+    var full = el("button", "iconBtn");
+    full.id = "btnFullscreen";
+    full.addEventListener("click", toggleFullscreen);
+    E.controlRow.appendChild(full);
+
+    updateCenterButtons();
+    updatePlayIcon();
+  }
+
+  function updateCenterButtons() {
+    var c = $("#centerControls");
+    if (!c) return;
+    c.innerHTML = "";
+    var compact = MOBILE;
+
+    var dm = el("button", "iconBtn");
+    dm.id = "btnDanmaku";
+    dm.title = "弹幕开关";
+    dm.innerHTML = state.danmaku.loading ? '<span class="spinIcon">' + icon("speed") + "</span>"
+      : (state.danmaku.on ? danmakuOnIcon() : danmakuOffIcon());
+    dm.addEventListener("click", toggleDanmaku);
+    c.appendChild(dm);
+
+    var dset = el("button", "iconBtn");
+    dset.innerHTML = danmakuSettingIcon();
+    dset.title = "弹幕设置";
+    dset.addEventListener("click", showDanmakuSettings);
+    c.appendChild(dset);
+
+    if (!compact) {
+      var inputWrap = el("div", "");
+      inputWrap.id = "danmakuInput";
+      var inp = el("input");
+      inp.placeholder = state.danmaku.on ? "发个友善的弹幕见证当下" : "已关闭弹幕";
+      inp.disabled = !state.danmaku.on;
+      inp.addEventListener("keydown", function (e) { if (e.key === "Enter") sendDanmaku(inp); });
+      var send = el("button", "", "发送");
+      send.id = "danmakuSend";
+      send.disabled = !state.danmaku.on;
+      send.addEventListener("click", function () { sendDanmaku(inp); });
+      inputWrap.appendChild(inp);
+      inputWrap.appendChild(send);
+      c.appendChild(inputWrap);
+    }
+
+    var sr = el("button", "textBtn", "画质增强");
+    sr.addEventListener("click", function (e) { e.stopPropagation(); showMenu(sr, superItems()); });
+    c.appendChild(sr);
+
+    var sp = el("button", "textBtn", state.speed === 1 ? "倍速" : state.speed + "x");
+    sp.id = "btnSpeed";
+    sp.addEventListener("click", function (e) { e.stopPropagation(); showMenu(sp, speedItems()); });
+    c.appendChild(sp);
+
+    var ar = el("button", "iconBtn");
+    ar.innerHTML = icon("aspect");
+    ar.title = "视频比例";
+    ar.addEventListener("click", function (e) { e.stopPropagation(); showMenu(ar, aspectItems()); });
+    c.appendChild(ar);
+
+    var ep = el("button", "iconBtn");
+    ep.innerHTML = icon("menuOpen");
+    ep.title = "选集面板";
+    ep.addEventListener("click", toggleEpisodePanel);
+    c.appendChild(ep);
+  }
+
+  function updatePlayIcon() {
+    var b = $("#btnPlayPause");
+    if (b) b.innerHTML = E.video.paused ? icon("play") : icon("pause");
+    var f = $("#btnFullscreen");
+    if (f) f.innerHTML = document.fullscreenElement ? icon("fullscreenExit") : icon("fullscreen");
+    var l = E.btnLock;
+    if (l) l.innerHTML = state.locked ? icon("lock") : icon("unlock");
+  }
+
+  function sendDanmaku(inp) {
+    var text = inp.value.trim();
+    if (!text) { toast("弹幕内容为空"); return; }
+    if (text.length > 100) { toast("弹幕内容过长"); return; }
+    if (!state.danmaku.count) { toast("当前剧集不支持弹幕发送的说"); return; }
+    engine.add(text, ACCENT, 1);
+    inp.value = "";
+    toast("弹幕已发送（本地显示）");
+  }
+
+  function toggleDanmaku() {
+    if (state.danmaku.loading) return;
+    if (state.danmaku.on) {
+      state.danmaku.on = false;
+      SETTINGS.danmakuEnabledByDefault = false;
+      engine.clear();
+      updateCenterButtons();
+      return;
+    }
+    if (!state.danmaku.count) { showDanmakuMatch(); return; }
+    state.danmaku.on = true;
+    SETTINGS.danmakuEnabledByDefault = true;
+    state.emitted = {};
+    state.lastSecond = -1;
+    engine.clear();
+    saveSettings();
+    updateCenterButtons();
+  }
+
+  function setSpeed(s) {
+    state.speed = s;
+    E.video.playbackRate = s;
+    applyEngineOptions();
+    var btn = $("#btnSpeed");
+    if (btn) btn.textContent = s === 1 ? "倍速" : s + "x";
+  }
+
+  function speedStep(dir) {
+    var list = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3];
+    var i = list.indexOf(state.speed);
+    if (i < 0) i = 3;
+    i = Math.max(0, Math.min(list.length - 1, i + dir));
+    setSpeed(list[i]);
+    showSpeedHud();
+  }
+
+  function togglePlay() { if (E.video.paused) E.video.play(); else E.video.pause(); }
+
+  function seekBy(sec) {
+    var t = Math.max(0, Math.min(E.video.duration || 0, E.video.currentTime + sec));
+    E.video.currentTime = t;
+    resetDanmakuTimeline();
+  }
+  function seekTo(t) {
+    E.video.currentTime = Math.max(0, Math.min(E.video.duration || 0, t));
+    resetDanmakuTimeline();
+  }
+  function resetDanmakuTimeline() {
+    state.emitted = {};
+    state.lastSecond = -1;
+    if (engine) engine.clear();
+  }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else E.player.requestFullscreen().catch(function () {});
+  }
+  function togglePip() {
+    try {
+      if (document.pictureInPictureElement) document.exitPictureInPicture();
+      else E.video.requestPictureInPicture();
+    } catch (e) { toast("画中画不可用"); }
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard) navigator.clipboard.writeText(text).then(function () { toast("已复制链接"); });
+    else { var t = el("textarea"); t.value = text; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); toast("已复制链接"); }
+  }
+
+  function startShutdown(min) {
+    cancelShutdown();
+    var end = Date.now() + min * 60000;
+    state.timers.shutdown = setTimeout(function () {
+      E.video.pause();
+      state.timers.shutdown = null;
+      toast("定时关闭已触发");
+    }, min * 60000);
+    toast("已设置 " + min + " 分钟后定时关闭");
+  }
+  function cancelShutdown() {
+    if (state.timers.shutdown) clearTimeout(state.timers.shutdown);
+    state.timers.shutdown = null;
+  }
+
+  function screenshot() {
+    try {
+      var c = document.createElement("canvas");
+      c.width = E.video.videoWidth; c.height = E.video.videoHeight;
+      c.getContext("2d").drawImage(E.video, 0, 0, c.width, c.height);
+      c.toBlob(function (blob) {
+        var a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = (state.title || "screenshot") + "-" + fmt(E.video.currentTime).replace(/:/g, "") + ".png";
+        a.click();
+        setTimeout(function () { URL.revokeObjectURL(a.href); }, 3000);
+      });
+      toast("已保存截图");
+    } catch (e) { toast("截图失败"); }
+  }
+
+  function showVideoInfo() {
+    openSheet({
+      title: "视频详情",
+      render: function (body) {
+        var info = [
+          ["标题", state.title],
+          ["当前集", state.episodes[state.index] ? state.episodes[state.index].title : ""],
+          ["链接", state.url],
+          ["分辨率", E.video.videoWidth ? E.video.videoWidth + "x" + E.video.videoHeight : "未知"],
+          ["时长", fmt(E.video.duration || 0)],
+          ["弹幕来源", state.danmaku.bangumiId ? "弹弹play · " + state.danmaku.animeTitle + " · " + state.danmaku.episodeTitle : "未匹配"],
+          ["弹幕数量", state.danmaku.count + " 条"]
+        ];
+        info.forEach(function (r) {
+          var row = el("div", "row");
+          row.innerHTML = '<div class="label">' + r[0] + '</div><div class="val" style="text-align:right;word-break:break-all;max-width:70%">' + r[1] + "</div>";
+          body.appendChild(row);
+        });
+      }
+    });
+  }
+
+  function editSkipTime() {
+    openSheet({
+      title: "跳过秒数",
+      render: function (body) {
+        var row = el("div", "row");
+        var inp = el("input", "textInput");
+        inp.type = "number";
+        inp.value = SETTINGS.buttonSkipTime;
+        row.appendChild(inp);
+        body.appendChild(row);
+        var act = el("div", "entryActions");
+        var ok = el("button", "btnPrimary", "确定");
+        ok.addEventListener("click", function () {
+          var v = parseInt(inp.value, 10);
+          if (v > 0) { SETTINGS.buttonSkipTime = v; saveSettings(); toast("快进时间已设为 " + v + " 秒"); }
+          closeSheet();
+        });
+        act.appendChild(ok);
+        body.appendChild(act);
+      }
+    });
+  }
+
+  function showDanmakuSettings() {
+    openSheet({
+      title: "弹幕设置",
+      tabs: [
+        {
+          label: "外观",
+          render: function (body) {
+            var s1 = el("div", "section");
+            s1.appendChild(el("h4", "", "显示效果"));
+            sliderRow(s1, {
+              label: "字体大小", min: 10, max: 48, step: 1, value: SETTINGS.danmakuFontSize,
+              format: function (v) { return String(Math.floor(v)); },
+              onChange: function (v) { SETTINGS.danmakuFontSize = Math.floor(v); applyEngineOptions(); saveSettings(); }
+            });
+            sliderRow(s1, {
+              label: "不透明度", min: 0.1, max: 1, step: 0.01, value: SETTINGS.danmakuOpacity,
+              format: function (v) { return Math.round(v * 100) + "%"; },
+              onChange: function (v) { SETTINGS.danmakuOpacity = Math.round(v * 100) / 100; applyEngineOptions(); saveSettings(); }
+            });
+            sliderRow(s1, {
+              label: "显示区域", min: 0, max: 1, step: 0.125, value: SETTINGS.danmakuArea,
+              format: function (v) { return Math.round(v * 100) + "%"; },
+              onChange: function (v) { SETTINGS.danmakuArea = v; applyEngineOptions(); saveSettings(); }
+            });
+            sliderRow(s1, {
+              label: "行间距", min: 0, max: 3, step: 0.1, value: SETTINGS.danmakuLineHeight,
+              format: function (v) { return v.toFixed(1); },
+              onChange: function (v) { SETTINGS.danmakuLineHeight = Math.round(v * 10) / 10; applyEngineOptions(); saveSettings(); }
+            });
+            body.appendChild(s1);
+
+            var s2 = el("div", "section");
+            s2.appendChild(el("h4", "", "弹幕类型"));
+            var chips = el("div", "chips");
+            [["滚动", "danmakuScroll"], ["顶部", "danmakuTop"], ["底部", "danmakuBottom"]].forEach(function (t) {
+              var c = el("button", "chip" + (SETTINGS[t[1]] ? " on" : ""), t[0]);
+              c.addEventListener("click", function () {
+                SETTINGS[t[1]] = !SETTINGS[t[1]];
+                c.classList.toggle("on", SETTINGS[t[1]]);
+                applyEngineOptions(); saveSettings();
+              });
+              chips.appendChild(c);
+            });
+            s2.appendChild(chips);
+            body.appendChild(s2);
+
+            var s3 = el("div", "section");
+            s3.appendChild(el("h4", "", "样式"));
+            switchRow(s3, {
+              icon: "aspect", label: "弹幕描边", value: SETTINGS.danmakuBorder,
+              onChange: function (v) { SETTINGS.danmakuBorder = v; applyEngineOptions(); saveSettings(); }
+            });
+            sliderRow(s3, {
+              label: "描边粗细", min: 0.1, max: 3, step: 0.1, value: SETTINGS.danmakuBorderSize,
+              format: function (v) { return v.toFixed(1); },
+              onChange: function (v) { SETTINGS.danmakuBorderSize = Math.round(v * 10) / 10; applyEngineOptions(); saveSettings(); }
+            });
+            switchRow(s3, {
+              icon: "translate", label: "弹幕颜色", value: SETTINGS.danmakuColor,
+              onChange: function (v) { SETTINGS.danmakuColor = v; saveSettings(); }
+            });
+            sliderRow(s3, {
+              label: "字体字重", min: 1, max: 9, step: 1, value: SETTINGS.danmakuFontWeight,
+              format: function (v) { return String(v); },
+              onChange: function (v) { SETTINGS.danmakuFontWeight = v; applyEngineOptions(); saveSettings(); }
+            });
+            body.appendChild(s3);
+          }
+        },
+        {
+          label: "播放",
+          render: function (body) {
+            var s1 = el("div", "section");
+            s1.appendChild(el("h4", "", "速度"));
+            sliderRow(s1, {
+              label: "停留时间", min: 2, max: 16, step: 1, value: SETTINGS.danmakuDuration,
+              format: function (v) { return Math.round(v) + " 秒"; },
+              onChange: function (v) { SETTINGS.danmakuDuration = Math.round(v); applyEngineOptions(); saveSettings(); }
+            });
+            switchRow(s1, {
+              icon: "speed", label: "跟随视频倍速", value: SETTINGS.danmakuFollowSpeed,
+              onChange: function (v) { SETTINGS.danmakuFollowSpeed = v; applyEngineOptions(); saveSettings(); }
+            });
+            body.appendChild(s1);
+
+            var s2 = el("div", "section");
+            s2.appendChild(el("h4", "", "校准与过滤"));
+            var conv = el("div", "row");
+            conv.innerHTML = '<div class="lead">' + icon("translate") + '</div><div class="label">简繁转换</div>';
+            var sel = el("select");
+            sel.style.cssText = "margin-left:auto;background:#232a32;border:1px solid #303844;color:#fff;border-radius:8px;padding:6px 8px";
+            [["0", "不转换"], ["1", "转为简体"], ["2", "转为繁体"]].forEach(function (o) {
+              var op = el("option", "", o[1]); op.value = o[0]; sel.appendChild(op);
+            });
+            sel.value = String(SETTINGS.danmakuChConvert);
+            sel.addEventListener("change", function () {
+              SETTINGS.danmakuChConvert = parseInt(sel.value, 10);
+              saveSettings();
+              if (state.danmaku.episodeId) loadComments(state.danmaku.episodeId);
+            });
+            conv.appendChild(sel);
+            s2.appendChild(conv);
+
+            var offset = el("div", "row");
+            offset.innerHTML = '<div class="lead">' + icon("sync") + '</div><div><div class="label">时间校准</div>' +
+              '<div class="desc">' + offsetText(SETTINGS.danmakuTimeOffset) + "</div></div>";
+            offset.addEventListener("click", showTimeOffsetSheet);
+            s2.appendChild(offset);
+
+            var shield = el("div", "row");
+            shield.innerHTML = '<div class="lead">' + icon("filter") + '</div><div><div class="label">屏蔽规则</div>' +
+              '<div class="desc">关键词与正则表达式</div></div>';
+            shield.addEventListener("click", showShieldSheet);
+            s2.appendChild(shield);
+            body.appendChild(s2);
+
+            var s3 = el("div", "section");
+            s3.appendChild(el("h4", "", "其他"));
+            switchRow(s3, {
+              icon: "aspect", label: "海量弹幕", desc: "弹幕过多时进行叠加绘制", value: SETTINGS.danmakuMassive,
+              onChange: function (v) { SETTINGS.danmakuMassive = v; applyEngineOptions(); saveSettings(); }
+            });
+            switchRow(s3, {
+              icon: "filter", label: "弹幕去重", desc: "相同内容弹幕过多时合并为一条弹幕", value: SETTINGS.danmakuDeduplication,
+              onChange: function (v) { SETTINGS.danmakuDeduplication = v; saveSettings(); toast("去重设置将在下次加载弹幕时生效"); }
+            });
+            body.appendChild(s3);
+          }
+        }
+      ]
+    });
+  }
+
+  function offsetText(v) {
+    if (!v) return "无偏移";
+    var t = Math.abs(Math.round(v));
+    var m = Math.floor(t / 60), s = t % 60;
+    var str = String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+    return (v > 0 ? "延后 " : "提前 ") + str;
+  }
+
+  function showTimeOffsetSheet() {
+    openSheet({
+      title: "弹幕时间校准",
+      subtitle: "弹幕出现太早就延后，太晚就提前。",
+      render: function (body) {
+        var row = el("div", "row");
+        var minus = el("button", "iconBtn");
+        minus.innerHTML = icon("remove");
+        var plus = el("button", "iconBtn");
+        plus.innerHTML = icon("add");
+        var show = el("div", "val", offsetText(SETTINGS.danmakuTimeOffset));
+        show.style.cssText = "font-size:28px;margin:0 auto;font-variant-numeric:tabular-nums";
+        minus.addEventListener("click", function () { setOffset((SETTINGS.danmakuTimeOffset || 0) - 1); show.textContent = offsetText(SETTINGS.danmakuTimeOffset); });
+        plus.addEventListener("click", function () { setOffset((SETTINGS.danmakuTimeOffset || 0) + 1); show.textContent = offsetText(SETTINGS.danmakuTimeOffset); });
+        row.appendChild(minus); row.appendChild(show); row.appendChild(plus);
+        body.appendChild(row);
+        sliderRow(body, {
+          label: "偏移", min: -180, max: 180, step: 5, value: SETTINGS.danmakuTimeOffset,
+          format: function (v) { return offsetText(v); },
+          onChange: function (v) { setOffset(v); show.textContent = offsetText(SETTINGS.danmakuTimeOffset); }
+        });
+        var tips = el("div", "row");
+        tips.innerHTML = '<div class="lead"></div><div class="desc">提前 3 分钟</div><div class="val">延后 3 分钟</div>';
+        body.appendChild(tips);
+        var act = el("div", "entryActions");
+        var reset = el("button", "btnGhost", "恢复同步");
+        reset.addEventListener("click", function () { setOffset(0); show.textContent = offsetText(0); closeSheet(); });
+        act.appendChild(reset);
+        body.appendChild(act);
+      }
+    });
+    function setOffset(v) {
+      v = Math.max(-180, Math.min(180, Math.round(v)));
+      SETTINGS.danmakuTimeOffset = v;
+      saveSettings();
+      resetDanmakuTimeline();
+    }
+  }
+
+  function showShieldSheet() {
+    openSheet({
+      title: "屏蔽规则",
+      render: function (body) {
+        var wrap = el("div");
+        function refresh() {
+          wrap.innerHTML = "";
+          if (!SHIELD.length) wrap.appendChild(el("div", "desc", "暂无规则，添加关键词或 /正则/ 即可过滤弹幕"));
+          SHIELD.forEach(function (rule, i) {
+            var tag = el("div", "shieldTag");
+            tag.innerHTML = "<b>" + rule.replace(/</g, "&lt;") + "</b><i>删除</i>";
+            tag.querySelector("i").addEventListener("click", function () { SHIELD.splice(i, 1); saveShield(); refresh(); });
+            wrap.appendChild(tag);
+          });
+        }
+        refresh();
+        body.appendChild(wrap);
+        var row = el("div", "searchRow");
+        row.style.marginTop = "12px";
+        var inp = el("input");
+        inp.placeholder = "关键词，或 /正则表达式/";
+        var add = el("button", "", "添加");
+        add.addEventListener("click", function () {
+          var v = inp.value.trim();
+          if (!v) return;
+          if (v.length > 64) { toast("规则过长"); return; }
+          SHIELD.push(v);
+          saveShield(); inp.value = ""; refresh();
+        });
+        row.appendChild(inp); row.appendChild(add);
+        body.appendChild(row);
+      }
+    });
+  }
+
+  function showDanmakuMatch() {
+    openSheet({
+      title: "弹幕匹配",
+      subtitle: "搜索番剧名，选择对应剧集",
+      render: function (body) {
+        var row = el("div", "searchRow");
+        var inp = el("input");
+        inp.placeholder = "输入番剧名称，例如：孤独摇滚";
+        inp.value = state.title || "";
+        var btn = el("button", "", "搜索");
+        row.appendChild(inp); row.appendChild(btn);
+        body.appendChild(row);
+        var list = el("div", "selList");
+        body.appendChild(list);
+        var current = { animes: [] };
+
+        function doSearch() {
+          var kw = inp.value.trim();
+          if (!kw) { toast("请输入关键词"); return; }
+          list.innerHTML = '<div class="desc">搜索中…</div>';
+          dandanSearch(kw).then(function (res) {
+            current.animes = (res.animes || []);
+            list.innerHTML = "";
+            if (!current.animes.length) { list.appendChild(el("div", "desc", "没有找到匹配的番剧")); return; }
+            current.animes.forEach(function (a) {
+              var b = el("button", "selItem", a.animeTitle + (a.typeDescription ? "<small>" + a.typeDescription + "</small>" : ""));
+              b.addEventListener("click", function () { loadEpisodes(a); });
+              list.appendChild(b);
+            });
+          }).catch(function () { list.innerHTML = '<div class="desc">搜索失败，请检查网络或后端签名配置</div>'; });
+        }
+        btn.addEventListener("click", doSearch);
+        inp.addEventListener("keydown", function (e) { if (e.key === "Enter") doSearch(); });
+        doSearch();
+
+        function loadEpisodes(a) {
+          list.innerHTML = '<div class="desc">加载剧集…</div>';
+          dandanBangumi(a.animeId).then(function (res) {
+            var eps = (res.bangumi && res.bangumi.episodes) || [];
+            list.innerHTML = "";
+            var back = el("button", "selItem", "‹ 返回搜索结果");
+            back.addEventListener("click", doSearch);
+            list.appendChild(back);
+            if (!eps.length) { list.appendChild(el("div", "desc", "该番剧没有剧集")); return; }
+            eps.forEach(function (ep) {
+              var b = el("button", "selItem", ep.episodeTitle || ("第 " + ep.episodeId + " 集"));
+              b.addEventListener("click", function () {
+                state.danmaku.animeTitle = a.animeTitle;
+                state.danmaku.animeId = a.animeId;
+                state.danmaku.bangumiId = (res.bangumi && res.bangumi.animeId) || a.animeId;
+                state.danmaku.episodeTitle = ep.episodeTitle || "";
+                loadComments(ep.episodeId);
+              });
+              list.appendChild(b);
+            });
+          }).catch(function () { list.innerHTML = '<div class="desc">加载剧集失败</div>'; });
+        }
+      }
+    });
+  }
+
+  function loadComments(episodeId) {
+    closeSheet();
+    state.danmaku.loading = true;
+    state.danmaku.episodeId = episodeId;
+    updateCenterButtons();
+    dandanComment(episodeId, SETTINGS.danmakuChConvert).then(function (res) {
+      var comments = res.comments || [];
+      var entries = comments.map(function (c) {
+        var parts = String(c.p || "").split(",");
+        return {
+          message: c.m,
+          time: parseFloat(parts[0] || "0"),
+          type: parseInt(parts[1] || "1", 10),
+          color: "#" + ("000000" + parseInt(parts[2] || "16777215", 10).toString(16)).slice(-6),
+          source: parts[3] || ""
+        };
+      }).filter(function (d) { return d.message && !isBlocked(d.message); });
+      setDanmakuData(entries);
+      state.danmaku.loading = false;
+      state.danmaku.on = true;
+      SETTINGS.danmakuEnabledByDefault = true;
+      saveSettings();
+      updateCenterButtons();
+      toast("弹幕加载成功，共 " + entries.length + " 条");
+    }).catch(function () {
+      state.danmaku.loading = false;
+      updateCenterButtons();
+      toast("弹幕加载失败");
+    });
+  }
+
+  function toggleEpisodePanel() {
+    var exist = document.getElementById("epPanel");
+    if (exist) { exist.remove(); return; }
+    var p = el("div", "epPanel");
+    p.id = "epPanel";
+    p.appendChild(el("h3", "", "选集"));
+    state.episodes.forEach(function (ep, i) {
+      var b = el("button", "epItem" + (i === state.index ? " on" : ""), ep.title);
+      b.addEventListener("click", function () { switchEpisode(i); p.remove(); });
+      p.appendChild(b);
+    });
+    E.player.appendChild(p);
+  }
+
+  function loadSource(url) {
+    state.url = url;
+    var proxied = "/api/proxy?url=" + encodeURIComponent(url) + (state.referer ? "&referer=" + encodeURIComponent(state.referer) : "");
+    if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
+    var isM3u8 = /\.m3u8(\?|$)/i.test(url) || url.indexOf("m3u8") !== -1;
+    if (isM3u8 && window.Hls && window.Hls.isSupported()) {
+      hls = new window.Hls({ lowLatencyMode: false, enableWorker: true });
+      hls.loadSource(proxied);
+      hls.attachMedia(E.video);
+      hls.on(window.Hls.Events.ERROR, function (evt, data) {
+        if (data && data.fatal) toast("HLS 播放出错：" + data.type);
+      });
+    } else {
+      E.video.src = proxied;
+    }
+    state.lastSrc = url;
+    resetDanmakuTimeline();
+  }
+
+  function switchEpisode(index) {
+    if (index < 0 || index >= state.episodes.length) { toast(index >= state.episodes.length ? "已经是最新一集" : "已经是第一集"); return; }
+    var old = state.episodes[state.index];
+    var oldTime = E.video.currentTime;
+    if (old) old.progress = oldTime;
+    state.index = index;
+    var ep = state.episodes[index];
+    var resume = ep.progress && ep.progress > 5 && (!ep.duration || ep.progress < ep.duration - 5) ? ep.progress : 0;
+    E.spinner.classList.remove("hidden");
+    loadSource(ep.url);
+    if (resume) {
+      E.video.addEventListener("loadedmetadata", function once() {
+        E.video.removeEventListener("loadedmetadata", once);
+        E.video.currentTime = resume;
+        E.video.play().catch(function () {});
+      });
+    } else {
+      E.video.play().catch(function () {});
+    }
+    buildTopBar();
+    updateTitle();
+    toast("正在加载 " + ep.title);
+  }
+
+  function updateTitle() {
+    var ep = state.episodes[state.index];
+    var t = $("#titleText");
+    if (t) t.textContent = " " + state.title + (ep ? " [" + ep.title + "]" : "");
+  }
+
+  function startPlayback(title, links, referer, pipMode) {
+    var lines = links.split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
+    if (!lines.length) { toast("请至少输入一条链接"); return; }
+    state.title = title || guessTitle(lines[0]);
+    state.referer = referer || "";
+    state.episodes = lines.map(function (u, i) { return { url: u, title: "第 " + (i + 1) + " 集" }; });
+    state.index = 0;
+    E.entry.classList.add("hidden");
+    E.player.classList.remove("hidden");
+    buildTopBar();
+    buildBottomBar();
+    updateTitle();
+    if (!engine) engine = new DanmakuEngine(E.danmaku);
+    applyEngineOptions();
+    applyAspect();
+    applySuperResolution();
+    loadSource(state.episodes[0].url);
+    state.danmaku.on = !!SETTINGS.danmakuEnabledByDefault && state.danmaku.count > 0;
+    updateCenterButtons();
+    showPanel(true);
+    E.video.play().catch(function () {});
+    pushHistory({ title: state.title, episodes: lines, referer: state.referer, time: Date.now() });
+    if (pipMode) togglePip();
+    if (!state.danmaku.count) toast("未加载弹幕，点弹幕按钮可手动匹配");
+  }
+
+  function guessTitle(url) {
+    try {
+      var p = new URL(url);
+      var name = decodeURIComponent(p.pathname.split("/").filter(Boolean).pop() || "视频");
+      return name.replace(/\.[a-z0-9]+$/i, "");
+    } catch (e) { return "视频"; }
+  }
+
+  function leavePlayer() {
+    E.video.pause();
+    if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
+    E.video.removeAttribute("src");
+    E.video.load();
+    clearDanmaku();
+    closeMenus();
+    var p = document.getElementById("epPanel");
+    if (p) p.remove();
+    E.player.classList.add("hidden");
+    E.entry.classList.remove("hidden");
+    renderHistory();
+  }
+
+  function renderHistory() {
+    var list = readHistory();
+    E.historyList.innerHTML = "";
+    if (!list.length) return;
+    E.historyList.appendChild(el("div", "muted", "最近播放"));
+    list.forEach(function (item) {
+      var div = el("div", "historyItem");
+      div.innerHTML = '<span>' + item.title + '</span><span class="muted">' + item.episodes.length + " 集</span>";
+      div.addEventListener("click", function () {
+        E.entryTitle.value = item.title;
+        E.entryLinks.value = item.episodes.join("\n");
+        E.entryReferer.value = item.referer || "";
+      });
+      E.historyList.appendChild(div);
+    });
+  }
+
+  var panelHideTimer = null;
+  function showPanel(force) {
+    if (state.locked && !force) return;
+    E.player.classList.remove("panelHidden");
+    clearTimeout(panelHideTimer);
+    panelHideTimer = setTimeout(function () {
+      if (state.locked) return;
+      if (document.getElementById("epPanel")) return;
+      if (menuHost().children.length) return;
+      E.player.classList.add("panelHidden");
+    }, SETTINGS.panelHideTime);
+  }
+
+  function flashCursor() {
+    E.player.classList.remove("hideCursor");
+    clearTimeout(state.hideCursorTimer);
+    state.hideCursorTimer = setTimeout(function () {
+      if (document.fullscreenElement) E.player.classList.add("hideCursor");
+    }, 2000);
+  }
+
+  function showSpeedHud() {
+    E.speedText.textContent = state.speed.toFixed(1) + "x";
+    E.speedHud.classList.add("show");
+    clearTimeout(E.speedHud._t);
+    E.speedHud._t = setTimeout(function () { E.speedHud.classList.remove("show"); }, 1200);
+  }
+
+  function showAdjustHud(type, value) {
+    E.adjustIcon.innerHTML = type === "volume" ? icon("volume") : icon("brightness");
+    E.adjustFill.style.width = Math.round(value * 100) + "%";
+    E.adjustSep.style.left = Math.round(value * 100) + "%";
+    E.adjustHud.classList.add("show");
+    clearTimeout(state.adjustTimer);
+    state.adjustTimer = setTimeout(function () { E.adjustHud.classList.remove("show"); }, 650);
+  }
+
+  function showSeekHud(visible) {
+    if (!visible) { E.seekHud.classList.remove("show"); return; }
+    var off = state.seekDirection >= 0 ? "+" : "-";
+    var diff = Math.abs(state.seekTarget - (E.video.currentTime || 0));
+    E.seekMain.textContent = state.seekCancelPending ? "松开取消" : (off + fmt(diff));
+    E.seekSub.textContent = state.seekCancelPending ? "移回画面继续调整"
+      : fmt(state.seekTarget) + " / " + fmt(E.video.duration || 0);
+    E.seekIcon.innerHTML = icon("forward");
+    E.seekIcon.style.transform = state.seekDirection >= 0 ? "none" : "scaleX(-1)";
+    var bg = E.seekHud.querySelector(".hudBg");
+    if (bg) bg.style.width = (E.video.duration ? Math.max(0, Math.min(1, state.seekTarget / E.video.duration)) * 100 : 0) + "%";
+    E.seekHud.classList.add("show");
+  }
+
+  function hidePanel() {
+    clearTimeout(panelHideTimer);
+    E.player.classList.add("panelHidden");
+  }
+
+  function togglePanel() {
+    if (E.player.classList.contains("panelHidden")) showPanel(true);
+    else hidePanel();
+  }
+
+  function updateProgress() {
+    var d = E.video.duration || 0;
+    var c = E.video.currentTime || 0;
+    if (!state.seekDragging) {
+      var ratio = d ? Math.max(0, Math.min(1, c / d)) : 0;
+      var played = E.progress.querySelector(".played");
+      var thumb = E.progress.querySelector(".thumb");
+      if (played) played.style.width = (ratio * 100) + "%";
+      if (thumb) thumb.style.left = (ratio * 100) + "%";
+    }
+    var bufEnd = 0;
+    try { if (E.video.buffered && E.video.buffered.length) bufEnd = E.video.buffered.end(E.video.buffered.length - 1); } catch (e) {}
+    var buffer = E.progress.querySelector(".buffer");
+    if (buffer) buffer.style.width = (d ? Math.max(0, Math.min(1, bufEnd / d)) * 100 : 0) + "%";
+    var tl = document.getElementById("timeLabel");
+    if (tl) tl.textContent = fmt(c) + " / " + fmt(d);
+  }
+
+  function setVolume(v) {
+    state.volume = Math.max(0, Math.min(1, isFinite(v) ? v : state.volume));
+    E.video.volume = state.volume;
+    E.video.muted = state.volume <= 0.001;
+  }
+
+  function applyBrightness() {
+    E.stage.style.filter = state.brightness >= 0.999 ? "" : "brightness(" + Math.max(0.05, state.brightness) + ")";
+  }
+
+  function bindProgress() {
+    var dragging = false;
+    function timeAt(clientX) {
+      var r = E.progress.getBoundingClientRect();
+      var p = Math.max(0, Math.min(1, (clientX - r.left) / (r.width || 1)));
+      return p * (E.video.duration || 0);
+    }
+    function paint(clientX) {
+      var d = E.video.duration || 0;
+      var t = timeAt(clientX);
+      state.seekTarget = t;
+      var played = E.progress.querySelector(".played");
+      var thumb = E.progress.querySelector(".thumb");
+      var ratio = d ? t / d : 0;
+      if (played) played.style.width = (ratio * 100) + "%";
+      if (thumb) thumb.style.left = (ratio * 100) + "%";
+      var lbl = E.progress.querySelector(".tlabel.left");
+      if (lbl) lbl.textContent = fmt(t);
+      var tl = document.getElementById("timeLabel");
+      if (tl) tl.textContent = fmt(t) + " / " + fmt(d);
+    }
+    E.progress.addEventListener("pointerdown", function (e) {
+      if (!E.video.duration) return;
+      dragging = true;
+      state.seekDragging = true;
+      E.progress.classList.add("dragging", "showLabels");
+      try { E.progress.setPointerCapture(e.pointerId); } catch (err) {}
+      var right = E.progress.querySelector(".tlabel.right");
+      if (right) right.textContent = fmt(E.video.duration);
+      paint(e.clientX);
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    E.progress.addEventListener("pointermove", function (e) { if (dragging) paint(e.clientX); });
+    function done(e) {
+      if (!dragging) return;
+      dragging = false;
+      state.seekDragging = false;
+      E.progress.classList.remove("dragging", "showLabels");
+      if (e.type === "pointerup") seekTo(timeAt(e.clientX));
+      showPanel();
+    }
+    E.progress.addEventListener("pointerup", done);
+    E.progress.addEventListener("pointercancel", done);
+  }
+
+  function bindVideoEvents() {
+    E.video.addEventListener("play", function () { updatePlayIcon(); showPanel(); flashCursor(); });
+    E.video.addEventListener("pause", function () { updatePlayIcon(); showPanel(true); });
+    E.video.addEventListener("timeupdate", updateProgress);
+    E.video.addEventListener("progress", updateProgress);
+    E.video.addEventListener("loadedmetadata", function () { E.spinner.classList.add("hidden"); updateProgress(); });
+    E.video.addEventListener("waiting", function () { E.spinner.classList.remove("hidden"); });
+    E.video.addEventListener("playing", function () { E.spinner.classList.add("hidden"); });
+    E.video.addEventListener("canplay", function () { E.spinner.classList.add("hidden"); });
+    E.video.addEventListener("error", function () { E.spinner.classList.add("hidden"); toast("视频加载失败"); });
+    E.video.addEventListener("ended", function () {
+      E.spinner.classList.add("hidden");
+      if (SETTINGS.autoPlayNext && state.index < state.episodes.length - 1) switchEpisode(state.index + 1);
+    });
+  }
+
+  function bindStageGestures() {
+    var g = null;
+    var longTimer = null;
+    var singleTimer = null;
+    var lastTap = 0;
+
+    function clearLong() {
+      if (longTimer) { clearTimeout(longTimer); longTimer = null; }
+    }
+
+    function tap(touch) {
+      if (document.getElementById("overlayHost").children.length) return;
+      if (menuHost().children.length) { closeMenus(); return; }
+      var now = Date.now();
+      if (now - lastTap < 300) {
+        lastTap = 0;
+        if (singleTimer) { clearTimeout(singleTimer); singleTimer = null; }
+        if (touch) togglePlay();
+        else if (!state.locked) toggleFullscreen();
+        return;
+      }
+      lastTap = now;
+      clearTimeout(singleTimer);
+      singleTimer = setTimeout(function () {
+        singleTimer = null;
+        if (touch) { if (state.locked) showPanel(true); else togglePanel(); }
+        else togglePlay();
+      }, 260);
+    }
+
+    E.stage.addEventListener("pointerdown", function (e) {
+      if (e.button && e.button !== 0) return;
+      if (document.getElementById("overlayHost").children.length) return;
+      var touch = e.pointerType !== "mouse";
+      g = {
+        touch: touch,
+        x0: e.clientX,
+        y0: e.clientY,
+        startTime: E.video.currentTime || 0,
+        startSpeed: state.speed,
+        startVolume: state.volume,
+        startBrightness: state.brightness,
+        mode: null,
+        moved: false,
+        long: false,
+        pending: false
+      };
+      clearLong();
+      if (touch && !state.locked) {
+        longTimer = setTimeout(function () {
+          longTimer = null;
+          if (!g || g.moved || g.mode) return;
+          g.long = true;
+          state.lastSpeed = state.speed;
+          setSpeed(SETTINGS.defaultShortcutForwardPlaySpeed);
+          showSpeedHud();
+        }, 480);
+      }
+    });
+
+    E.stage.addEventListener("pointermove", function (e) {
+      if (!g || g.long) return;
+      var dx = e.clientX - g.x0;
+      var dy = e.clientY - g.y0;
+      if (!g.moved && Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      clearLong();
+      g.moved = true;
+      if (!g.touch || state.locked) return;
+      if (!g.mode) {
+        g.mode = Math.abs(dx) >= Math.abs(dy) ? "seek" : "adjust";
+        if (g.mode === "seek") {
+          state.seekTarget = g.startTime;
+          state.seekDirection = 0;
+          state.seekCancelPending = false;
+        } else {
+          g.adjustType = e.clientX < window.innerWidth / 2 ? "brightness" : "volume";
+        }
+      }
+      if (g.mode === "seek") {
+        var edge = e.clientX <= 0 || e.clientY <= 0 ||
+          e.clientX >= window.innerWidth || e.clientY >= window.innerHeight;
+        if (edge) {
+          g.pending = true;
+        } else {
+          if (g.pending) { g.pending = false; g.x0 = e.clientX; g.startTime = state.seekTarget; }
+          dx = e.clientX - g.x0;
+          state.seekDirection = dx === 0 ? state.seekDirection : (dx > 0 ? 1 : -1);
+          state.seekTarget = Math.max(0, Math.min(E.video.duration || 0,
+            g.startTime + dx * (180 / Math.max(1, window.innerWidth))));
+        }
+        state.seekCancelPending = g.pending;
+        showSeekHud(true);
+        return;
+      }
+      if (!SETTINGS.brightnessVolumeGesture) return;
+      if (g.adjustType === "brightness") {
+        state.brightness = Math.max(0, Math.min(1, g.startBrightness - dy / (window.innerHeight * 2)));
+        applyBrightness();
+        showAdjustHud("brightness", state.brightness);
+      } else {
+        setVolume(g.startVolume - dy / (window.innerHeight * 0.03));
+        showAdjustHud("volume", state.volume);
+      }
+    });
+
+    function finish(e) {
+      if (!g) return;
+      var gg = g;
+      g = null;
+      clearLong();
+      if (gg.long) { setSpeed(gg.startSpeed); showSpeedHud(); return; }
+      if (gg.mode === "seek") {
+        showSeekHud(false);
+        state.seekDragging = false;
+        if (!state.seekCancelPending && gg.moved) seekTo(state.seekTarget);
+        state.seekCancelPending = false;
+        state.seekDirection = 0;
+        state.seekTarget = E.video.currentTime || 0;
+        showPanel();
+        return;
+      }
+      if (gg.mode === "adjust") { showPanel(); return; }
+      if (gg.moved) return;
+      tap(gg.touch);
+    }
+    E.stage.addEventListener("pointerup", finish);
+    E.stage.addEventListener("pointercancel", function () {
+      if (!g) return;
+      clearLong();
+      if (g.long) setSpeed(g.startSpeed);
+      if (g.mode === "seek") { showSeekHud(false); state.seekCancelPending = false; state.seekDirection = 0; }
+      g = null;
+    });
+
+    E.stage.addEventListener("wheel", function (e) {
+      if (document.getElementById("overlayHost").children.length) return;
+      e.preventDefault();
+      setVolume(state.volume + (e.deltaY > 0 ? -0.05 : 0.05));
+      showAdjustHud("volume", state.volume);
+    }, { passive: false });
+  }
+
+  function bindKeyboard() {
+    document.addEventListener("keydown", function (e) {
+      var tag = document.activeElement ? document.activeElement.tagName : "";
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (E.entry && !E.entry.classList.contains("hidden")) return;
+      if (document.getElementById("overlayHost").children.length) {
+        if (e.key === "Escape") { e.preventDefault(); closeSheet(); }
+        return;
+      }
+      if (menuHost().children.length) {
+        if (e.key === "Escape") { e.preventDefault(); closeMenus(); }
+        return;
+      }
+      var k = e.key;
+      if (k === " ") { e.preventDefault(); togglePlay(); return; }
+      if (k === "ArrowRight") {
+        e.preventDefault();
+        if (e.repeat && !state.arrowLong) {
+          state.arrowLong = true;
+          state.lastSpeed = state.speed;
+          setSpeed(SETTINGS.defaultShortcutForwardPlaySpeed);
+          showSpeedHud();
+        }
+        return;
+      }
+      if (k === "ArrowLeft") { e.preventDefault(); seekBy(-SETTINGS.arrowKeySkipTime); return; }
+      if (k === "ArrowUp") { e.preventDefault(); setVolume(state.volume + 0.05); showAdjustHud("volume", state.volume); return; }
+      if (k === "ArrowDown") { e.preventDefault(); setVolume(state.volume - 0.05); showAdjustHud("volume", state.volume); return; }
+      if (k === "n" || k === "N") { switchEpisode(state.index + 1); return; }
+      if (k === "p" || k === "P") { switchEpisode(state.index - 1); return; }
+      if (k === "m" || k === "M") {
+        E.video.muted = !E.video.muted;
+        state.volume = E.video.muted ? 0 : (E.video.volume || 1);
+        showAdjustHud("volume", state.volume);
+        return;
+      }
+      if (k === "f" || k === "F") { toggleFullscreen(); return; }
+      if (k === "Escape") { if (document.fullscreenElement) document.exitFullscreen(); return; }
+      if (k === "d" || k === "D") { toggleDanmaku(); return; }
+      if (k === "s" || k === "S") { screenshot(); return; }
+      if (k === "k" || k === "K") { toast("暂无跳过信息"); return; }
+      if (k === "1") { setSpeed(1); showSpeedHud(); return; }
+      if (k === "2") { setSpeed(2); showSpeedHud(); return; }
+      if (k === "3") { setSpeed(3); showSpeedHud(); return; }
+      if (k === "x" || k === "X") { speedStep(1); return; }
+      if (k === "z" || k === "Z") { speedStep(-1); return; }
+    });
+    document.addEventListener("keyup", function (e) {
+      if (e.key !== "ArrowRight") return;
+      if (tagBlocked()) return;
+      if (state.arrowLong) {
+        state.arrowLong = false;
+        setSpeed(state.lastSpeed);
+        showSpeedHud();
+      } else {
+        seekBy(SETTINGS.arrowKeySkipTime);
+      }
+    });
+    function tagBlocked() {
+      var tag = document.activeElement ? document.activeElement.tagName : "";
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" ||
+        (E.entry && !E.entry.classList.contains("hidden"));
+    }
+  }
+
+  function bindEntry() {
+    var pipEntry = document.getElementById("btnPipEntry");
+    function start(pip) {
+      startPlayback(E.entryTitle.value.trim(), E.entryLinks.value, E.entryReferer.value.trim(), pip);
+    }
+    E.btnPlay.addEventListener("click", function () { start(false); });
+    if (pipEntry) pipEntry.addEventListener("click", function () { start(true); });
+    E.entryLinks.addEventListener("keydown", function (e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") start(false);
+    });
+  }
+
+  function boot() {
+    if (MOBILE) E.player.classList.add("compact");
+    if (typeof state.volume !== "number") state.volume = 1;
+    if (typeof state.brightness !== "number") state.brightness = 1;
+    state.arrowLong = false;
+    E.btnShot.innerHTML = icon("camera");
+    E.btnShot.title = "截图";
+    E.btnShot.addEventListener("click", screenshot);
+    E.btnLock.innerHTML = icon("unlock");
+    E.btnLock.title = "锁定面板";
+    E.btnLock.addEventListener("click", function () {
+      state.locked = !state.locked;
+      updatePlayIcon();
+      toast(state.locked ? "面板已锁定" : "面板已解锁");
+      showPanel(true);
+    });
+    bindEntry();
+    bindVideoEvents();
+    bindProgress();
+    bindStageGestures();
+    bindKeyboard();
+    renderHistory();
+    updateProgress();
+    if (engine) applyEngineOptions();
+    E.player.addEventListener("mousemove", function (e) {
+      if (e.pointerType && e.pointerType !== "mouse") return;
+      if (state.locked) { showPanel(true); return; }
+      if (!E.player.classList.contains("hidden")) showPanel(true);
+      flashCursor();
+    });
+    document.addEventListener("fullscreenchange", function () { updatePlayIcon(); flashCursor(); });
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>
